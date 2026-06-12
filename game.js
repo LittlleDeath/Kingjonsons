@@ -982,7 +982,7 @@ function drawHUD(nf) {
 
 function drawHelp() {
   const lines = [
-    'REINO — protótipo estilo Kingdom Two Crowns',
+    'poggerscity — jogo estilo kingdom  ',
     '',
     'A/D ou ←/→ — cavalgar      Shift — galopar',
     'B — modo construção      1-4 ou roda do mouse — escolher',
@@ -990,9 +990,9 @@ function drawHelp() {
     '',
     'Fazendas geram moedas de dia · Tendas atraem aldeões',
     'Aldeões constroem as obras · Torres atiram nos monstros',
-    'Muralhas bloqueiam o caminho · À noite ELES vêm...',
+    'Muralhas bloqueiam o caminho · À noite ELES molestam...',
     '',
-    'H — fechar esta ajuda',
+    'H — fechar esta janela',
   ];
   const bw = 560, bh = lines.length * 24 + 30;
   const bx = (W - bw) / 2, by = (H - bh) / 2 - 30;
