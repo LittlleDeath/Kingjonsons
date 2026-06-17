@@ -20,14 +20,21 @@ const SPAWN_X = WORLD_W / 2;   // centro do reino (fogueira)
 const DAY_LEN = 70;            // segundos de dia
 const CYCLE = 105;             // dia + noite
 
-// O terreno é uma FUNÇÃO, não um array: qualquer x do mundo tem
-// uma altura. É isso que permite construir em qualquer lugar.
+// Oceano: água com ondulações suaves
 function terrainY(x) {
-  return H * 0.78
-    + Math.sin(x * 0.0021) * 26
-    + Math.sin(x * 0.00063 + 2.1) * 44
-    + Math.sin(x * 0.0117) * 4;
+  return H * 0.85 + Math.sin(x * 0.003 + animT * 0.5) * 8;
 }
+// Nível da água (base do oceano)
+const waterLevel = () => H * 0.85;
+// Deck no topo da plataforma; as perninhas tocam a linha d'água embaixo.
+// DECK_INSET abaixa onde a casa/personagens/colisão ficam, pra sentar no
+// deck real (a sprite tem um "toco" no topo). Só mexe nisso pra calibrar.
+const DECK_INSET = 22;
+const floorY = () => waterLevel() - PLAT_VIS + DECK_INSET;
+// Está sobre o píer? (região coberta pelas duas plataformas: SPAWN_X ± PLAT_W)
+const onPlatform = (x) => Math.abs(x - SPAWN_X) <= PLAT_W;
+// Altura do chão em x: deck do píer ou superfície da água
+const groundY = (x) => onPlatform(x) ? floorY() : waterLevel();
 
 // ---------- Tipos de estrutura ----------
 const TYPES = {
@@ -78,7 +85,7 @@ const state = {
   day: 1,
   time: 0,
   paused: false,
-  player: { x: SPAWN_X + 60, vx: 0, dir: 1 },
+  player: { x: SPAWN_X + 60, y: 0, vx: 0, vy: 0, dir: 1 },
   structures: [],
   villagers: [],
   enemies: [],
@@ -90,11 +97,37 @@ const state = {
   helpOn: true,
 };
 
+// Plataformas no oceano. Largura de desenho derivada do aspecto da sprite
+// (1561x1389 ≈ 1.12). As duas ficam encostadas → "efeito infinito".
+// A sprite tem ~48% transparente no topo; só os ~52% de baixo é o píer.
+const PLAT_TOP_FRAC = 0.479, PLAT_BOT_FRAC = 0.999;
+const PLAT_VIS = 120;                                        // altura visível do píer
+const PLAT_H = PLAT_VIS / (PLAT_BOT_FRAC - PLAT_TOP_FRAC);   // altura de desenho da sprite
+const PLAT_W = PLAT_H * (1561 / 1389);
+const platforms = [
+  { x: SPAWN_X - PLAT_W / 2, img: 'plat1' },
+  { x: SPAWN_X + PLAT_W / 2, img: 'plat2' },
+];
+
+// Casa-de-barco (castelo do oceano), centrada sobre as plataformas
+const house = { x: SPAWN_X };
+
+// Player começa em pé no deck
+state.player.y = floorY();
+
 // Sprites
 const aldeaoImg = new Image();
 aldeaoImg.src = 'aldeao.png';
 const playerImg = new Image();
 playerImg.src = 'player.png';
+const plat1Img = new Image();
+plat1Img.src = 'plataforma1.png';
+const plat2Img = new Image();
+plat2Img.src = 'plataforma2.png';
+const houseImg = new Image();
+houseImg.src = 'casa-de-barco.png';
+const boatImg = new Image();
+boatImg.src = 'barco.png';
 let camX = 0;
 let animT = 0;
 let spawnTimer = 3;
@@ -305,6 +338,11 @@ function updatePlayer(dt) {
   p.vx = lerp(p.vx, mv * speed, 1 - Math.pow(0.0015, dt));
   p.x = clamp(p.x + p.vx * dt, 30, WORLD_W - 30);
   if (mv !== 0) p.dir = mv;
+  // gravidade: cai até pousar no deck do píer (ou na água, fora dele)
+  p.vy += 1400 * dt;
+  p.y += p.vy * dt;
+  const gy = groundY(p.x);
+  if (p.y >= gy) { p.y = gy; p.vy = 0; }
 }
 
 function updateStructures(dt) {
@@ -485,17 +523,18 @@ function updatePickups(dt) {
     if (!c.grounded) {
       c.vy += 420 * dt;
       c.y += c.vy * dt;
-      const gy = terrainY(c.x) - 6;
+      const gy = groundY(c.x) - 6;
       if (c.y >= gy) {
         c.y = gy;
         if (Math.abs(c.vy) > 50) c.vy = -c.vy * 0.45;
         else c.grounded = true;
       }
     }
-    if (Math.abs(c.x - p.x) < 28) {
+    const cy = c.grounded ? groundY(c.x) - 6 : c.y;
+    if (Math.abs(c.x - p.x) < 28 && Math.abs(cy - p.y) < 44) {
       c.dead = true;
       state.coins++;
-      for (let i = 0; i < 4; i++) spawnParticle(c.x, terrainY(c.x) - 12, '#ffd23e');
+      for (let i = 0; i < 4; i++) spawnParticle(c.x, cy - 6, '#ffd23e');
     }
   }
 }
@@ -525,14 +564,15 @@ function draw() {
   drawRidge(0.15, H * 0.52, 70, 0.0016, 30, 0.005, lerpC([96, 116, 150], [16, 20, 50], nf));
   drawRidge(0.35, H * 0.62, 50, 0.0023, 22, 0.007, lerpC([70, 92, 122], [12, 15, 42], nf));
   drawGround(nf);
-  drawTrees(nf);
   drawCampfireBase();
   for (const s of state.structures) drawStructure(s);
   for (const c of state.pickups) drawCoin(c);
   for (const v of state.villagers) drawVillager(v);
   for (const e of state.enemies) drawEnemy(e);
+  drawBoat();
   drawPlayer();
   for (const a of state.arrows) drawArrow(a);
+  drawPlatforms(); // sempre na frente dos outros
   for (const p of state.particles) {
     ctx.globalAlpha = clamp(p.life * 2, 0, 1);
     ctx.fillStyle = p.color;
@@ -563,16 +603,12 @@ function draw() {
 }
 
 function drawSky(nf) {
-  const dusk = Math.sin(nf * Math.PI);
-  const top = lerpC([110, 170, 225], [6, 8, 32], nf);
-  let hr = [
-    lerp(lerp(225, 25, nf), 235, dusk * 0.55),
-    lerp(lerp(210, 30, nf), 120, dusk * 0.55),
-    lerp(lerp(170, 70, nf), 60, dusk * 0.55),
-  ];
+  // Céu oceano (dia = azul claro, noite = azul escuro)
+  const top = nf < 0.5 ? '#4a7a9a' : '#0a1a2a';
+  const bot = nf < 0.5 ? '#2a5a7a' : '#050a15';
   const g = ctx.createLinearGradient(0, 0, 0, H * 0.8);
   g.addColorStop(0, top);
-  g.addColorStop(1, `rgb(${hr.map(Math.round).join(',')})`);
+  g.addColorStop(1, bot);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
@@ -625,11 +661,10 @@ function drawRidge(par, base, amp1, f1, amp2, f2, color) {
 }
 
 function drawGround(nf) {
-  const grass = lerpC([74, 124, 63], [20, 32, 42], nf * 0.85);
-  const dirt = lerpC([62, 52, 42], [14, 14, 26], nf * 0.85);
+  // Oceano: agua dark com ondas suaves
   const g = ctx.createLinearGradient(0, H * 0.6, 0, H);
-  g.addColorStop(0, grass);
-  g.addColorStop(1, dirt);
+  g.addColorStop(0, '#1a3a4a');
+  g.addColorStop(1, '#0d1f2a');
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(0, H);
@@ -637,9 +672,9 @@ function drawGround(nf) {
   ctx.lineTo(W, H);
   ctx.closePath();
   ctx.fill();
-  // linha de grama no topo
-  ctx.strokeStyle = lerpC([108, 168, 84], [28, 44, 52], nf * 0.85);
-  ctx.lineWidth = 4;
+  // onda no topo da agua
+  ctx.strokeStyle = '#2a5a7a';
+  ctx.lineWidth = 2;
   ctx.beginPath();
   for (let sx = 0; sx <= W + 6; sx += 6) {
     const y = terrainY(sx + camX);
@@ -669,17 +704,42 @@ function drawTrees(nf) {
   }
 }
 
+// Plataformas: o deck (topo da sprite) fica na linha d'água, o resto
+// afunda no oceano. Os personagens andam exatamente nesse deck.
+function drawPlatforms() {
+  const wl = waterLevel();
+  for (const p of platforms) {
+    const sx = p.x - camX;
+    const img = p.img === 'plat1' ? plat1Img : plat2Img;
+    const w = PLAT_W + 1; // +1 evita fresta entre as duas
+    if (sx < -w || sx > W + w) continue;
+    ctx.save();
+    ctx.translate(sx, wl);
+    const topOff = PLAT_TOP_FRAC * PLAT_H; // padding transparente acima do deck
+    if (img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, -w / 2, -PLAT_VIS - topOff, w, PLAT_H);
+    } else {
+      ctx.fillStyle = '#6a8a9a';
+      ctx.fillRect(-w / 2, -PLAT_VIS, w, PLAT_VIS);
+    }
+    ctx.restore();
+  }
+}
+
+// Casa-de-barco: base apoiada no deck (linha d'água)
 function drawCampfireBase() {
-  const sx = SPAWN_X - camX;
-  if (sx < -60 || sx > W + 60) return;
-  const y = terrainY(SPAWN_X);
+  const sx = house.x - camX;
+  const h = 130;
+  const w = houseImg.naturalWidth ? h * (houseImg.naturalWidth / houseImg.naturalHeight) : h;
+  if (sx < -w || sx > W + w) return;
   ctx.save();
-  ctx.translate(sx, y);
-  ctx.strokeStyle = '#4a3526';
-  ctx.lineWidth = 5;
-  ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(-10, -3); ctx.lineTo(10, -7); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(-9, -7); ctx.lineTo(11, -3); ctx.stroke();
+  ctx.translate(sx, floorY());
+  if (houseImg.complete && houseImg.naturalWidth > 0) {
+    ctx.drawImage(houseImg, -w / 2, -h, w, h);
+  } else {
+    ctx.fillStyle = '#8b5a3c';
+    ctx.fillRect(-w / 2, -h, w, h);
+  }
   ctx.restore();
 }
 
@@ -832,7 +892,7 @@ function drawStructureShape(key, level) {
 function drawCoin(c) {
   const sx = c.x - camX;
   if (sx < -20 || sx > W + 20) return;
-  const y = c.grounded ? terrainY(c.x) - 6 : c.y;
+  const y = c.grounded ? groundY(c.x) - 6 : c.y;
   ctx.fillStyle = '#ffd23e';
   ctx.beginPath(); ctx.arc(sx, y, 6, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#b8901e';
@@ -843,7 +903,7 @@ function drawCoin(c) {
 function drawVillager(v) {
   const sx = v.x - camX;
   if (sx < -30 || sx > W + 30) return;
-  const y = terrainY(v.x);
+  const y = groundY(v.x);
   const building = v.st === 'build';
   const moving = !building;
 
@@ -852,7 +912,7 @@ function drawVillager(v) {
   const tilt = building ? Math.sin(v.swing) * 0.12
     : moving ? Math.sin(v.walk || 0) * 0.06 : 0;
 
-  const h = 38;
+  const h = 54;
   const ratio = aldeaoImg.naturalWidth ? aldeaoImg.naturalWidth / aldeaoImg.naturalHeight : 0.6;
   const w = h * ratio;
 
@@ -880,15 +940,44 @@ function drawEnemy(e) {
   ctx.beginPath(); ctx.arc(sx + 6, y - 3 + bob, 4, 0, Math.PI * 2); ctx.fill();
 }
 
+// Barco: aparece sob o player quando ele está na água (veículo/locomotiva)
+function drawBoat() {
+  const p = state.player;
+  if (onPlatform(p.x)) return; // só na água
+  const sx = p.x - camX;
+  const h = 60;
+  const w = boatImg.naturalWidth ? h * (boatImg.naturalWidth / boatImg.naturalHeight) : h * 3;
+  if (sx < -w || sx > W + w) return;
+  const bobY = Math.sin(animT * 2 + p.x * 0.01) * 3; // balanço nas ondas
+  ctx.save();
+  ctx.translate(sx, p.y + bobY);
+  ctx.scale(p.dir, 1);
+  // o player pisa no convés; o casco desce na água
+  if (boatImg.complete && boatImg.naturalWidth > 0) {
+    ctx.drawImage(boatImg, -w / 2, -h * 0.28, w, h);
+  } else {
+    ctx.fillStyle = '#7a3b32';
+    ctx.fillRect(-w / 2, -h * 0.28, w, h);
+  }
+  ctx.restore();
+}
+
 function drawPlayer() {
   const p = state.player;
-  const sx = p.x - camX;
-  const y = terrainY(p.x);
-  const moving = Math.abs(p.vx) > 12;
+  let sx = p.x - camX;
+  const y = p.y;
+  const noBoat = onPlatform(p.x);
+  const moving = noBoat && Math.abs(p.vx) > 12; // no barco fica parado (sem animação)
   const bob = moving ? Math.abs(Math.sin(animT * 10)) * 3 : 0;
   const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0; // balanço lateral igual os aldeões
 
-  const h = 52;
+  // na água: fica na traseira do barco (~30% a partir do fundo)
+  if (!noBoat) {
+    const bw = boatImg.naturalWidth ? 60 * (boatImg.naturalWidth / boatImg.naturalHeight) : 180;
+    sx -= p.dir * bw * 0.2;
+  }
+
+  const h = 66;
   const ratio = playerImg.naturalWidth ? playerImg.naturalWidth / playerImg.naturalHeight : 0.6;
   const w = h * ratio;
 
