@@ -38,6 +38,40 @@ const TYPES = {
 };
 const ORDER = ['muralha', 'tenda', 'fazenda', 'torre'];
 
+// ---------- Níveis de melhoria ----------
+// Índice 0 = nível 1 (base, igual ao TYPES). custoUp = preço para subir
+// vindo do nível anterior. h/hp/range/fireRate sobrescrevem a base.
+// Adicionar um nível novo é só acrescentar um item aqui.
+const LEVELS = {
+  muralha: [
+    { hp: 80 },
+    { custoUp: 6,  hp: 180, h: 76 },                          // Muralha II
+  ],
+  tenda:   [{ hp: 40 }],
+  fazenda: [{ hp: 40 }],
+  torre:   [
+    { hp: 60,  range: 300, fireRate: 1.4 },
+    { custoUp: 10, hp: 120, h: 104, range: 410, fireRate: 0.9 }, // Torre II
+  ],
+};
+const REFUND = 0.7; // demolição devolve 70% do investido
+
+function maxLevel(key) { return LEVELS[key].length; }
+function structH(s) { return s.dispH || s.t.h; }
+// Aplica os status do nível atual à estrutura
+function applyLevel(s) {
+  const d = LEVELS[s.key][s.level - 1];
+  s.hpMax = d.hp;
+  s.dispH = d.h || TYPES[s.key].h;
+  s.range = d.range || 0;
+  s.fireRate = d.fireRate || 0;
+}
+// Custo para melhorar (null se já está no nível máximo)
+function upgradeCost(s) {
+  if (s.level >= maxLevel(s.key)) return null;
+  return LEVELS[s.key][s.level].custoUp;
+}
+
 // ---------- Estado ----------
 const state = {
   coins: 25,
@@ -55,10 +89,18 @@ const state = {
   msg: { text: '', t: 0 },
   helpOn: true,
 };
+
+// Sprites
+const aldeaoImg = new Image();
+aldeaoImg.src = 'aldeao.png';
+const playerImg = new Image();
+playerImg.src = 'player.png';
 let camX = 0;
 let animT = 0;
 let spawnTimer = 3;
 let hotbarRects = [];
+let manageRects = [];      // hitboxes dos botões Melhorar/Demolir
+let hoveredStruct = null;  // estrutura sob o mouse (fora do modo construção)
 
 // Aldeões iniciais (para construírem a primeira tenda)
 state.villagers.push(newVillager(SPAWN_X - 40, null));
@@ -95,6 +137,7 @@ function nightFactor() {
   return (CYCLE - t) / 6;
 }
 function showMsg(text) { state.msg.text = text; state.msg.t = 2.4; }
+
 function newVillager(x, home) {
   return { x, dir: 1, st: 'idle', tgt: null, goal: x, wt: 0, home, swing: 0, walk: 0 };
 }
@@ -110,6 +153,9 @@ window.addEventListener('keydown', e => {
   if (k === 'escape') state.build.active = false;
   if (k === 'h') state.helpOn = !state.helpOn;
   if (k === 'p') state.paused = !state.paused;
+  // gerenciar estrutura sob o mouse (fora do modo construção)
+  if (k === 'u' && !state.build.active && hoveredStruct) tryUpgrade(hoveredStruct);
+  if (k === 'x' && !state.build.active && hoveredStruct) demolish(hoveredStruct);
   const d = ORDER.findIndex((_, i) => k === String(i + 1));
   if (d >= 0) { state.build.sel = d; if (!state.build.active) state.build.active = true; }
 });
@@ -128,6 +174,14 @@ canvas.addEventListener('mousedown', e => {
       }
     }
     tryPlace();
+  } else {
+    // fora do modo construção: clique nos botões Melhorar/Demolir
+    for (const r of manageRects) {
+      if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+        r.action();
+        return;
+      }
+    }
   }
 });
 canvas.addEventListener('contextmenu', e => { e.preventDefault(); state.build.active = false; });
@@ -159,10 +213,13 @@ function tryPlace() {
   if (!v.ok) { showMsg(v.reason); return; }
   const t = TYPES[key];
   state.coins -= t.custo;
-  state.structures.push({
-    key, t, x: wx, hp: t.hp, progress: 0, built: false,
-    workers: 0, ct: 0, cd: 0, dead: false,
-  });
+  const s = {
+    key, t, x: wx, level: 1, invested: t.custo,
+    hp: t.hp, hpMax: t.hp, dispH: t.h, range: 0, fireRate: 0,
+    progress: 0, built: false, workers: 0, ct: 0, cd: 0, dead: false,
+  };
+  applyLevel(s);
+  state.structures.push(s);
   for (let i = 0; i < 10; i++) spawnParticle(wx, terrainY(wx) - 6, '#c9b08a');
   showMsg(`${t.nome} encomendada — aldeões a caminho!`);
 }
@@ -180,8 +237,34 @@ function completeStructure(s) {
 
 function destroyStructure(s) {
   s.dead = true;
-  for (let i = 0; i < 16; i++) spawnParticle(s.x, terrainY(s.x) - s.t.h / 2, '#8d8896');
+  for (let i = 0; i < 16; i++) spawnParticle(s.x, terrainY(s.x) - structH(s) / 2, '#8d8896');
   showMsg(`${s.t.nome} foi destruída!`);
+}
+
+// Melhora a estrutura para o próximo nível (repara e fortalece).
+function tryUpgrade(s) {
+  if (!s || s.dead) return;
+  if (!s.built) { showMsg('Espere a obra terminar'); return; }
+  const cost = upgradeCost(s);
+  if (cost == null) { showMsg('Já está no nível máximo'); return; }
+  if (state.coins < cost) { showMsg('Moedas insuficientes'); return; }
+  state.coins -= cost;
+  s.invested += cost;
+  s.level++;
+  applyLevel(s);
+  s.hp = s.hpMax; // melhoria também repara
+  showMsg(`${s.t.nome} melhorada → nível ${s.level}!`);
+  for (let i = 0; i < 18; i++) spawnParticle(s.x, terrainY(s.x) - structH(s) / 2, '#ffe9a8');
+}
+
+// Demole a estrutura REFUND (70%) do total investido.
+function demolish(s) {
+  if (!s || s.dead) return;
+  const refund = Math.round(s.invested * REFUND);
+  state.coins += refund;
+  s.dead = true;
+  showMsg(`${s.t.nome} demolida — reembolso de ${refund} moeda${refund !== 1 ? 's' : ''} (70%)`);
+  for (let i = 0; i < 14; i++) spawnParticle(s.x, terrainY(s.x) - structH(s) / 2, '#ffd23e');
 }
 
 // ---------- Atualização ----------
@@ -243,15 +326,15 @@ function updateStructures(dt) {
     if (s.key === 'torre') {
       s.cd -= dt;
       if (s.cd <= 0) {
-        let best = null, bd = 300;
+        let best = null, bd = s.range || 300;
         for (const e of state.enemies) {
           if (e.dead) continue;
           const d = Math.abs(e.x - s.x);
           if (d < bd) { bd = d; best = e; }
         }
         if (best) {
-          s.cd = 1.4;
-          state.arrows.push({ x: s.x, y: terrainY(s.x) - s.t.h + 16, tgt: best, vx: 0, vy: 0, life: 3, dead: false });
+          s.cd = s.fireRate || 1.4;
+          state.arrows.push({ x: s.x, y: terrainY(s.x) - structH(s) + 16, tgt: best, vx: 0, vy: 0, life: 3, dead: false });
         }
       }
     }
@@ -350,7 +433,7 @@ function updateEnemies(dt) {
       if (e.atkCd <= 0) {
         e.atkCd = 1.2;
         blocker.hp -= 6;
-        spawnParticle(blocker.x + (Math.random() - 0.5) * blocker.t.w, terrainY(blocker.x) - blocker.t.h * 0.4, '#aa9999');
+        spawnParticle(blocker.x + (Math.random() - 0.5) * blocker.t.w, terrainY(blocker.x) - structH(blocker) * 0.4, '#aa9999');
         if (blocker.hp <= 0) destroyStructure(blocker);
       }
       continue;
@@ -465,6 +548,8 @@ function draw() {
   drawGlows(nf);
 
   if (state.build.active) drawGhost();
+  else if (!state.helpOn && !state.paused) drawManage();
+  else { manageRects = []; hoveredStruct = null; }
   drawHUD(nf);
   if (state.helpOn) drawHelp();
   if (state.paused) {
@@ -605,15 +690,15 @@ function drawStructure(s) {
   ctx.save();
   ctx.translate(sx, y);
   if (s.built) {
-    drawStructureShape(s.key, 1);
+    drawStructureShape(s.key, s.level);
   } else {
     ctx.globalAlpha = 0.28;
-    drawStructureShape(s.key, 1);
+    drawStructureShape(s.key, s.level);
     ctx.globalAlpha = 1;
     // andaimes
     ctx.strokeStyle = '#7a5a33';
     ctx.lineWidth = 3;
-    const w = s.t.w, h = s.t.h;
+    const w = s.t.w, h = structH(s);
     ctx.beginPath();
     ctx.moveTo(-w / 2 - 4, 0); ctx.lineTo(-w / 2 - 4, -h);
     ctx.moveTo(w / 2 + 4, 0); ctx.lineTo(w / 2 + 4, -h);
@@ -629,28 +714,46 @@ function drawStructure(s) {
     ctx.fillRect(-pw / 2, -h - 14, pw * clamp(s.progress / s.t.tempo, 0, 1), 6);
   }
   // barra de vida quando danificada
-  if (s.built && s.hp < s.t.hp) {
+  if (s.built && s.hp < s.hpMax) {
     const pw = Math.max(s.t.w, 36);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(-pw / 2, -s.t.h - 12, pw, 5);
+    ctx.fillRect(-pw / 2, -structH(s) - 12, pw, 5);
     ctx.fillStyle = '#e05548';
-    ctx.fillRect(-pw / 2, -s.t.h - 12, pw * clamp(s.hp / s.t.hp, 0, 1), 5);
+    ctx.fillRect(-pw / 2, -structH(s) - 12, pw * clamp(s.hp / s.hpMax, 0, 1), 5);
   }
   ctx.restore();
 }
 
-// Desenha a forma da estrutura com origem no centro da base
-function drawStructureShape(key, alpha) {
+// Desenha a forma da estrutura com origem no centro da base.
+// level >= 2 desenha a versão melhorada (mais alta/reforçada).
+function drawStructureShape(key, level) {
+  level = level || 1;
   if (key === 'muralha') {
-    ctx.fillStyle = '#8d8896';
-    ctx.fillRect(-13, -50, 26, 50);
-    ctx.fillRect(-13, -58, 7, 9);
-    ctx.fillRect(-3.5, -58, 7, 9);
-    ctx.fillRect(6, -58, 7, 9);
+    const big = level >= 2;
+    const bh = big ? 68 : 50;             // altura do corpo
+    ctx.fillStyle = big ? '#9aa0ad' : '#8d8896';
+    ctx.fillRect(-13, -bh, 26, bh);
+    // ameias
+    ctx.fillRect(-13, -bh - 8, 7, 9);
+    ctx.fillRect(-3.5, -bh - 8, 7, 9);
+    ctx.fillRect(6, -bh - 8, 7, 9);
     ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = 1.5;
-    for (let yy = -40; yy < 0; yy += 10) {
+    for (let yy = -(bh - 10); yy < 0; yy += 10) {
       ctx.beginPath(); ctx.moveTo(-13, yy); ctx.lineTo(13, yy); ctx.stroke();
+    }
+    if (big) {
+      // reforço de ferro + bandeirinha no topo
+      ctx.strokeStyle = '#5a5f6b';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-13, -bh * 0.66); ctx.lineTo(13, -bh * 0.66); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-13, -bh * 0.33); ctx.lineTo(13, -bh * 0.33); ctx.stroke();
+      ctx.strokeStyle = '#5a4032'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -bh - 8); ctx.lineTo(0, -bh - 20); ctx.stroke();
+      ctx.fillStyle = '#c4453f';
+      ctx.beginPath();
+      ctx.moveTo(0, -bh - 20); ctx.lineTo(12, -bh - 17); ctx.lineTo(0, -bh - 14);
+      ctx.closePath(); ctx.fill();
     }
   } else if (key === 'tenda') {
     ctx.fillStyle = '#a05335';
@@ -693,7 +796,10 @@ function drawStructureShape(key, alpha) {
     ctx.fillStyle = '#3a2a1e';
     ctx.fillRect(25, -12, 8, 12);
   } else if (key === 'torre') {
-    ctx.fillStyle = '#8d8896';
+    const big = level >= 2;
+    ctx.save();
+    if (big) ctx.scale(1.12, 1.2);       // Torre II: mais alta e larga
+    ctx.fillStyle = big ? '#9aa0ad' : '#8d8896';
     ctx.beginPath();
     ctx.moveTo(-13, 0); ctx.lineTo(-10, -66); ctx.lineTo(10, -66); ctx.lineTo(13, 0);
     ctx.closePath(); ctx.fill();
@@ -710,6 +816,16 @@ function drawStructureShape(key, alpha) {
     ctx.beginPath(); ctx.moveTo(0, -76); ctx.lineTo(0, -86); ctx.stroke();
     ctx.beginPath(); ctx.arc(0, -89, 3, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(4, -84, 5, -Math.PI / 2, Math.PI / 2); ctx.stroke();
+    ctx.restore();
+    if (big) {
+      // bandeira no topo (fora da escala)
+      ctx.strokeStyle = '#5a4032'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -103); ctx.lineTo(0, -116); ctx.stroke();
+      ctx.fillStyle = '#c4453f';
+      ctx.beginPath();
+      ctx.moveTo(0, -116); ctx.lineTo(12, -113); ctx.lineTo(0, -110);
+      ctx.closePath(); ctx.fill();
+    }
   }
 }
 
@@ -728,33 +844,27 @@ function drawVillager(v) {
   const sx = v.x - camX;
   if (sx < -30 || sx > W + 30) return;
   const y = terrainY(v.x);
-  const moving = v.st !== 'build';
-  const lp = Math.sin(v.walk || 0) * 4;
+  const building = v.st === 'build';
+  const moving = !building;
+
+  // animação: balanço ao andar/martelar
+  const hop = 0;
+  const tilt = building ? Math.sin(v.swing) * 0.12
+    : moving ? Math.sin(v.walk || 0) * 0.06 : 0;
+
+  const h = 38;
+  const ratio = aldeaoImg.naturalWidth ? aldeaoImg.naturalWidth / aldeaoImg.naturalHeight : 0.6;
+  const w = h * ratio;
+
   ctx.save();
-  ctx.translate(sx, y);
+  ctx.translate(sx, y - hop);
+  ctx.rotate(tilt);
   ctx.scale(v.dir, 1);
-  ctx.strokeStyle = '#2b2433';
-  ctx.fillStyle = '#2b2433';
-  ctx.lineWidth = 2.6;
-  ctx.lineCap = 'round';
-  // pernas
-  ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(moving ? lp : 2, 0); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(moving ? -lp : -2, 0); ctx.stroke();
-  // corpo
-  ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(0, -17); ctx.stroke();
-  // cabeça
-  ctx.beginPath(); ctx.arc(0, -20, 3.4, 0, Math.PI * 2); ctx.fill();
-  // braço + martelo quando construindo
-  if (v.st === 'build') {
-    const a = -0.6 + Math.sin(v.swing) * 0.9;
-    ctx.save();
-    ctx.translate(0, -15);
-    ctx.rotate(a);
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(8, 0); ctx.stroke();
-    ctx.fillRect(7, -3, 4, 6);
-    ctx.restore();
+  if (aldeaoImg.complete && aldeaoImg.naturalWidth) {
+    ctx.drawImage(aldeaoImg, -w / 2, -h, w, h);
   } else {
-    ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(4, -10); ctx.stroke();
+    ctx.fillStyle = '#7a3b32'; // fallback enquanto a sprite carrega
+    ctx.fillRect(-w / 2, -h, w, h);
   }
   ctx.restore();
 }
@@ -775,48 +885,23 @@ function drawPlayer() {
   const sx = p.x - camX;
   const y = terrainY(p.x);
   const moving = Math.abs(p.vx) > 12;
-  const ph = animT * (Math.abs(p.vx) > 220 ? 15 : 10);
-  const l = moving ? Math.sin(ph) * 6 : 0;
-  const l2 = moving ? Math.sin(ph + Math.PI) * 6 : 0;
+  const bob = moving ? Math.abs(Math.sin(animT * 10)) * 3 : 0;
+  const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0; // balanço lateral igual os aldeões
+
+  const h = 52;
+  const ratio = playerImg.naturalWidth ? playerImg.naturalWidth / playerImg.naturalHeight : 0.6;
+  const w = h * ratio;
+
   ctx.save();
-  ctx.translate(sx, y);
+  ctx.translate(sx, y - bob);
+  ctx.rotate(tilt);
   ctx.scale(p.dir, 1);
-  ctx.strokeStyle = '#241f2e';
-  ctx.fillStyle = '#241f2e';
-  ctx.lineCap = 'round';
-  // pernas do cavalo
-  ctx.lineWidth = 3.5;
-  for (const [bx, off] of [[-12, l], [-7, l2], [8, l2], [13, l]]) {
-    ctx.beginPath(); ctx.moveTo(bx, -18); ctx.lineTo(bx + off, -1); ctx.stroke();
+  if (playerImg.complete && playerImg.naturalWidth) {
+    ctx.drawImage(playerImg, -w / 2, -h, w, h);
+  } else {
+    ctx.fillStyle = '#7d2436'; // fallback enquanto a sprite carrega
+    ctx.fillRect(-w / 2, -h, w, h);
   }
-  // corpo
-  ctx.beginPath(); ctx.ellipse(0, -22, 17, 8, 0, 0, Math.PI * 2); ctx.fill();
-  // pescoço e cabeça
-  ctx.lineWidth = 7;
-  ctx.beginPath(); ctx.moveTo(13, -26); ctx.lineTo(21, -37); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(24, -39, 6, 4, -0.3, 0, Math.PI * 2); ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(21, -42); ctx.lineTo(23, -46); ctx.stroke();
-  // cauda
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.moveTo(-16, -24); ctx.quadraticCurveTo(-24, -22, -25, -14); ctx.stroke();
-  // cavaleiro
-  ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(0, -28); ctx.lineTo(-1, -44); ctx.stroke();
-  ctx.beginPath(); ctx.arc(-1, -48, 4, 0, Math.PI * 2); ctx.fill();
-  // capa
-  ctx.fillStyle = '#7d2436';
-  ctx.beginPath();
-  ctx.moveTo(-1, -44);
-  ctx.lineTo(-12 - (moving ? 6 : 0), -30 + (moving ? Math.sin(animT * 8) * 2 : 0));
-  ctx.lineTo(-3, -29);
-  ctx.closePath(); ctx.fill();
-  // coroa
-  ctx.fillStyle = '#e7b93c';
-  ctx.beginPath();
-  ctx.moveTo(-5, -52); ctx.lineTo(-5, -56); ctx.lineTo(-3, -53);
-  ctx.lineTo(-1, -56.5); ctx.lineTo(1, -53); ctx.lineTo(3, -56); ctx.lineTo(3, -52);
-  ctx.closePath(); ctx.fill();
   ctx.restore();
 }
 
@@ -900,7 +985,7 @@ function drawGhost() {
   ctx.save();
   ctx.translate(sx, y);
   ctx.globalAlpha = 0.55;
-  drawStructureShape(key, 0.55);
+  drawStructureShape(key, 1);
   ctx.globalAlpha = 1;
   ctx.fillStyle = v.ok ? 'rgba(110,230,110,0.22)' : 'rgba(235,80,70,0.30)';
   ctx.fillRect(-t.w / 2 - 4, -t.h - 4, t.w + 8, t.h + 8);
@@ -910,6 +995,75 @@ function drawGhost() {
   ctx.font = 'bold 14px system-ui';
   ctx.fillStyle = v.ok ? '#9fe88f' : '#ff9a8f';
   ctx.fillText(v.ok ? `${t.nome} — ${t.custo} moedas (clique)` : v.reason, sx, y - t.h - 22);
+}
+
+// Estrutura sob o mouse (fora do modo construção), para gerenciar.
+function structUnderMouse() {
+  if (state.build.active) return null;
+  const wx = mouse.x + camX;
+  for (const s of state.structures) {
+    if (s.dead) continue;
+    if (Math.abs(s.x - wx) > s.t.w / 2 + 12) continue;
+    const gy = terrainY(s.x);
+    if (mouse.y >= gy - structH(s) - 18 && mouse.y <= gy + 16) return s;
+  }
+  return null;
+}
+
+// Painel de gerenciamento: contorno + botões Melhorar / Demolir.
+function drawManage() {
+  manageRects = [];
+  hoveredStruct = structUnderMouse();
+  const s = hoveredStruct;
+  if (!s) return;
+  const sx = s.x - camX;
+  const top = terrainY(s.x) - structH(s);
+
+  // contorno de seleção
+  ctx.strokeStyle = 'rgba(255,233,168,0.9)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(sx - s.t.w / 2 - 6, top - 14, s.t.w + 12, structH(s) + 20);
+
+  // painel
+  const pw = 196, ph = 84;
+  const px = clamp(sx - pw / 2, 8, W - pw - 8);
+  const py = clamp(top - 16 - ph, 8, H - ph - 8);
+  ctx.fillStyle = 'rgba(12,12,28,0.92)';
+  ctx.fillRect(px, py, pw, ph);
+  ctx.strokeStyle = '#e7b93c'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(px, py, pw, ph);
+
+  // título e vida
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px system-ui';
+  ctx.fillText(`${s.t.nome} · Nível ${s.level}`, px + 10, py + 20);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '12px system-ui';
+  ctx.fillText(`HP ${Math.max(0, Math.ceil(s.hp))}/${s.hpMax}${s.built ? '' : ' · em obra'}`, px + 10, py + 37);
+
+  // botões
+  const bw = (pw - 30) / 2, bh = 26, by = py + ph - bh - 10;
+  ctx.textAlign = 'center'; ctx.font = 'bold 12px system-ui';
+  // Melhorar
+  const up = upgradeCost(s);
+  const canUp = s.built && up != null && state.coins >= up;
+  const bxU = px + 10;
+  ctx.fillStyle = up == null ? 'rgba(70,70,82,0.7)' : (canUp ? 'rgba(60,140,70,0.95)' : 'rgba(120,60,55,0.85)');
+  ctx.fillRect(bxU, by, bw, bh);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(up == null ? 'Nível máx' : `Melhorar ${up}●`, bxU + bw / 2, by + 17);
+  if (s.built && up != null) manageRects.push({ x: bxU, y: by, w: bw, h: bh, action: () => tryUpgrade(s) });
+  // Demolir
+  const refund = Math.round(s.invested * REFUND);
+  const bxD = px + 20 + bw;
+  ctx.fillStyle = 'rgba(150,70,60,0.92)';
+  ctx.fillRect(bxD, by, bw, bh);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`Demolir +${refund}●`, bxD + bw / 2, by + 17);
+  manageRects.push({ x: bxD, y: by, w: bw, h: bh, action: () => demolish(s) });
+
+  // dica de teclado
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '11px system-ui';
+  ctx.fillText('U melhorar · X demolir', px + pw / 2, py + ph + 14);
 }
 
 function drawHUD(nf) {
@@ -991,6 +1145,9 @@ function drawHelp() {
     'Fazendas geram moedas de dia · Tendas atraem aldeões',
     'Aldeões constroem as obras · Torres atiram nos monstros',
     'Muralhas bloqueiam o caminho · À noite ELES molestam...',
+    '',
+    'Mouse numa estrutura → Melhorar (U) ou Demolir (X, +70%)',
+    'Muralha e Torre têm nível 2 (mais HP / alcance)',
     '',
     'H — fechar esta janela',
   ];
