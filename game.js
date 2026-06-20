@@ -84,6 +84,8 @@ const state = {
   timeFrozen: false,
   player: { x: SPAWN_X + 60, y: 0, vx: 0, vy: 0, dir: 1, boatSkin: 'default', drawY: null, dvy: 0, onBoat: false },
   boatMenu: false,
+  menu: { open: false, page: 'main' },   // menu Esc
+  showFps: false,
   structures: [],
   villagers: [],
   enemies: [],
@@ -95,7 +97,6 @@ const state = {
   helpOn: false,
 };
 
-// sprite do píer ~48% transparente no topo;
 const PLAT_TOP_FRAC = 0.479, PLAT_BOT_FRAC = 0.999;
 const PLAT_VIS = 120;         // altura visível do píer
 const PLAT_H = PLAT_VIS / (PLAT_BOT_FRAC - PLAT_TOP_FRAC);
@@ -106,19 +107,19 @@ const platforms = [
 ];
 
 const house = { x: SPAWN_X };
-const boat = { x: SPAWN_X + PLAT_W * 0.9, dir: 1 };   // barco flutua na água
+const boat = { x: SPAWN_X + PLAT_W * 0.9, dir: 1 };  
 const boatWidth = () => 60 * (boatImg.naturalWidth ? boatImg.naturalWidth / boatImg.naturalHeight : 3);
-let PLAT_L = SPAWN_X - PLAT_W, PLAT_R = SPAWN_X + PLAT_W;   // deck JÁ construído
-let planL = PLAT_L, planR = PLAT_R;                          // inclui obras em andamento
-let rightCount = 0, leftCount = 0;       // plataformas concluídas por lado (gatilho da tocha)
-let rightPlanned = 0, leftPlanned = 0;   // plataformas encomendadas por lado (alterna sprite)
-// próxima sprite: direita = 1,2,1,2... · esquerda = 2,1,2,1...
+let PLAT_L = SPAWN_X - PLAT_W, PLAT_R = SPAWN_X + PLAT_W;  
+let planL = PLAT_L, planR = PLAT_R;                          
+let rightCount = 0, leftCount = 0;     
+let rightPlanned = 0, leftPlanned = 0;  
+
 const nextPlatImg = (side) => side > 0
   ? (rightPlanned % 2 === 0 ? 'plat1' : 'plat2')
   : (leftPlanned % 2 === 0 ? 'plat2' : 'plat1');
-const torches = [SPAWN_X - PLAT_W * 0.85, SPAWN_X + PLAT_W * 0.85];   // tochas construídas
+const torches = [SPAWN_X - PLAT_W * 0.85, SPAWN_X + PLAT_W * 0.85];  
 
-state.player.mode = 'platform';   // 'platform' (deck) ou 'boat' (na água)
+state.player.mode = 'platform';   // 'platform' ou 'boat' (na água)
 state.player.y = floorY();
 
 const aldeaoImg = new Image();
@@ -147,23 +148,24 @@ const nitroSnd = new Audio('nitro.mp3');
 nitroSnd.loop = true;
 let camX = 0;
 let animT = 0;
-let cloudX = SPAWN_X;   // posição da nuvem no mapa (vento p/ direita)
-let boatIdle = 0;     // 0 = movendo, 1 = parado (suavizado)
-let wakeFade = 0;     // opacidade do rastro: sobe/desce em 3s
+let cloudX = SPAWN_X;  
+let boatIdle = 0;    
+let wakeFade = 0;   
 let spawnTimer = 3;
 let hotbarRects = [];
 let manageRects = [];
 let uiRects = [];
 let hoveredStruct = null;
-let wPrev = false;   // estado anterior do W (pra disparar por toque, não por segurar)
-let nearBoatHouse = false;   // player dentro do sprite da casa de barco
-let boatBtnRect = null;      // botão "E" na tela
-let boatCardRects = [];      // cartas de seleção de barco
-let ghostBoatCanvas = null;  // sprite do barco tingido de verde (lazy)
+let wPrev = false;  
+let menuRects = [];  
+let fpsSmooth = 60; 
+let nearBoatHouse = false;  
+let boatBtnRect = null;   
+let boatCardRects = [];   
+let ghostBoatCanvas = null;  
 
 const houseWidth = () => (houseImg.naturalWidth ? 130 * (houseImg.naturalWidth / houseImg.naturalHeight) : 130);
 
-// barco verde-fantasma: tinge só os pixels do sprite (source-atop no próprio canvas)
 function getGhostBoat() {
   if (ghostBoatCanvas) return ghostBoatCanvas;
   if (!boatImg.complete || !boatImg.naturalWidth) return null;
@@ -229,7 +231,14 @@ window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   const k = e.key.toLowerCase();
   if (k === 'b') state.build.active = !state.build.active;
-  if (k === 'escape') { state.build.active = false; state.boatMenu = false; }
+  if (k === 'escape') {
+    if (state.build.active) state.build.active = false;
+    else if (state.boatMenu) state.boatMenu = false;
+    else if (state.menu.open) {
+      if (state.menu.page !== 'main') state.menu.page = 'main';
+      else state.menu.open = false;
+    } else { state.menu.open = true; state.menu.page = 'main'; }
+  }
   if (k === 'h') state.helpOn = !state.helpOn;
   if (k === 'p') state.paused = !state.paused;
   if (k === 'e') { if (nearBoatHouse || state.boatMenu) state.boatMenu = !state.boatMenu; }
@@ -244,6 +253,15 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
+  if (state.menu.open) {   // menu Esc intercepta o clique
+    for (const r of menuRects) {
+      if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+        r.action();
+        return;
+      }
+    }
+    return;
+  }
   if (state.boatMenu) {   // menu de seleção de barco intercepta o clique
     for (const r of boatCardRects) {
       if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
@@ -295,7 +313,7 @@ canvas.addEventListener('wheel', e => {
 
 function platformCost() { return 1; }
 
-// encomenda uma plataforma; os aldeões é que constroem (orderPlatform → finishPlatform)
+// (orderPlatform → finishPlatform)
 function orderPlatform(side) {
   const cost = platformCost();
   if (state.coins < cost) { showMsg('Moedas insuficientes'); return; }
@@ -323,7 +341,7 @@ function finishPlatform(s) {
   s.dead = true;
   for (let i = 0; i < 16; i++) spawnParticle(s.x, floorY(), '#c9b08a');
   showMsg('Plataforma construída!');
-  // a cada 2 plataformas concluídas naquele lado, encomenda uma tocha perto do fim
+  // a cada 2 plataformas concluídas naquele lado, Cria 1 tocha
   const cnt = s.side < 0 ? leftCount : rightCount;
   if (cnt % 2 === 0) orderTorch(s.side < 0 ? s.tileL + 30 : s.tileR - 30);
 }
@@ -353,7 +371,7 @@ function validatePlacement(wx, key) {
 function tryPlace() {
   const key = ORDER[state.build.sel];
   const wx = mouse.x + camX;
-  if (TYPES[key].special === 'platform') {   // encomenda deck: lado pela posição do mouse
+  if (TYPES[key].special === 'platform') {
     orderPlatform(wx < SPAWN_X ? -1 : 1);
     return;
   }
@@ -459,7 +477,7 @@ function update(dt) {
 function updatePlayer(dt) {
   const p = state.player;
   const fast = keys['shift'];
-  // nitro: só montado no barco fantasma com shift — corre muito rápido + som
+  // nitro
   const nitro = p.mode === 'boat' && p.onBoat && p.boatSkin === 'ghost' && fast;
   if (nitro) {
     if (nitroSnd.paused) nitroSnd.play().catch(() => {});
@@ -469,43 +487,43 @@ function updatePlayer(dt) {
   }
   let speed = fast ? 290 : 175;            // corrida em terra / padrão do barco
   if (nitro) speed = 820;
-  else if (p.mode === 'boat' && !p.onBoat) speed *= 0.7;   // só nadando = 70%
-  // subindo pro deck: quase parado na horizontal (parece que está escalando)
+  else if (p.mode === 'boat' && !p.onBoat) speed *= 0.7;   // Nadando
+  // subindo pro deck
   const climbing = p.mode === 'platform' && p.drawY != null && p.drawY > floorY() + 8;
   if (climbing) speed *= 0.1;
   let mv = 0;
   if (keys['a'] || keys['arrowleft']) mv -= 1;
   if (keys['d'] || keys['arrowright']) mv += 1;
-  // caindo dentro do barco: trava A/D até estar 100% sentado
+  // caindo dentro do barco trava A/D
   if (p.mode === 'boat' && p.onBoat && !p.seated) { mv = 0; p.vx = 0; }
   p.vx = lerp(p.vx, mv * speed, 1 - Math.pow(0.0015, dt));
 
   if (p.mode === 'boat') {
-    // só vira quando desacelerar o bastante (precisa frear pra virar)
+    // Efeito de frear o barco
     if (mv !== 0 && Math.abs(p.vx) < 25) p.dir = mv;
     p.x = clamp(p.x + p.vx * dt, 30, WORLD_W - 30);
     p.y = waterLevel();
-    // o barco só se move quando o player está 100% dentro dele (terminou de descer)
+    // o barco só se move quando o player está 100% dentro dele
     if (p.onBoat && p.seated) {
-      boat.x = p.x;            // barco anda com o player
+      boat.x = p.x; 
       boat.dir = p.dir;
     }
-    const wEdge = keys['w'] && !wPrev;   // só no momento que aperta
+    const wEdge = keys['w'] && !wPrev;
     if (wEdge) {
       if (!p.onBoat && Math.abs(boat.x - p.x) < boatWidth() * 0.5) {
-        p.onBoat = true; p.x = boat.x; p.vx = 0; p.dir = boat.dir;   // perto do barco → embarca (prioridade)
+        p.onBoat = true; p.x = boat.x; p.vx = 0; p.dir = boat.dir;  
       } else if (p.x >= PLAT_L && p.x <= PLAT_R) {
-        p.mode = 'platform'; p.vy = 0; p.onBoat = false;             // alinhado ao deck → sobe
+        p.mode = 'platform'; p.vy = 0; p.onBoat = false;           
         p.x = clamp(p.x, PLAT_L, PLAT_R);
       }
     }
   } else {
-    if (mv !== 0) p.dir = mv;                        // no deck vira na hora
+    if (mv !== 0) p.dir = mv;                       
     const nx = p.x + p.vx * dt;
-    if (nx < PLAT_L || nx > PLAT_R) {                 // chegou no fim da plataforma → cai na água
+    if (nx < PLAT_L || nx > PLAT_R) {                 
       p.mode = 'boat';
       p.x = clamp(nx, 30, WORLD_W - 30);
-      p.onBoat = false;   // cai sempre nadando; entra no barco só com W perto dele
+      p.onBoat = false;   
       p.vy = 0;
     } else {
       p.x = nx;
@@ -513,26 +531,24 @@ function updatePlayer(dt) {
       p.y += p.vy * dt;
       const gy = floorY();
       if (p.y >= gy) { p.y = gy; p.vy = 0; }
-      // desce no barco com S, se alinhado (alcance = 70% da largura da sprite)
       if (keys['s'] && Math.abs(p.x - boat.x) < boatWidth() * 0.35) {
         p.mode = 'boat'; p.onBoat = true; p.x = boat.x; p.vx = 0; p.dir = boat.dir;
       }
     }
   }
 
-  // transição vertical animada: cai na água (gravidade) / sobe no deck (animação)
   const PH = 66;
   const target = p.mode !== 'boat' ? floorY()
     : (p.onBoat ? waterLevel() + boatBob() + PH * 0.4 : waterLevel() + PH * 0.5);
   if (p.drawY == null) { p.drawY = target; p.dvy = 0; }
   else {
     const diff = target - p.drawY;
-    if (Math.abs(diff) <= 8) { p.drawY = target; p.dvy = 0; }        // perto: acompanha (ex.: balanço do barco)
-    else if (diff > 0) { p.dvy += 1100 * dt; p.drawY = Math.min(target, p.drawY + p.dvy * dt); }  // caindo
-    else { p.dvy = 0; p.drawY = Math.max(target, p.drawY - 130 * dt); }                            // subindo
+    if (Math.abs(diff) <= 8) { p.drawY = target; p.dvy = 0; }       
+    else if (diff > 0) { p.dvy += 1100 * dt; p.drawY = Math.min(target, p.drawY + p.dvy * dt); } 
+    else { p.dvy = 0; p.drawY = Math.max(target, p.drawY - 130 * dt); }                          
   }
 
-  // 100% dentro do barco? (terminou de descer até a posição de assento)
+
   p.seated = p.onBoat && p.drawY != null && Math.abs(p.drawY - (waterLevel() + boatBob() + PH * 0.4)) <= 8;
 
   wPrev = keys['w'];
@@ -586,7 +602,6 @@ function releaseTarget(v) {
 }
 
 const VILL_H = 54;
-// transição vertical suave entre deck e água (cai com gravidade, sobe com animação)
 function animVillagerY(v, dt) {
   const target = onPlatform(v.x) ? floorY() : waterLevel() + VILL_H * 0.5;
   if (v.drawY == null) { v.drawY = target; v.dvy = 0; return; }
@@ -594,7 +609,7 @@ function animVillagerY(v, dt) {
     v.dvy = (v.dvy || 0) + 1100 * dt;
     v.drawY = Math.min(target, v.drawY + v.dvy * dt);
     if (v.drawY >= target) v.dvy = 0;
-  } else if (target < v.drawY - 0.5) {     // subindo de volta pro deck
+  } else if (target < v.drawY - 0.5) {     
     v.dvy = 0;
     v.drawY = Math.max(target, v.drawY - 130 * dt);
   } else {
@@ -778,16 +793,15 @@ function draw() {
   for (const s of state.structures) drawStructure(s);
   drawPlatforms();
   drawTorches();
-  drawReflection();            // espelha céu + casa + plataforma + tocha
-  drawGround(nf);              // água cristalina por cima do reflexo
-  drawPlatforms();             // pilares por cima da água
-  // atores dinâmicos (não refletem)
+  drawReflection();            
+  drawGround(nf);              
+  drawPlatforms();           
   for (const c of state.pickups) drawCoin(c);
   for (const v of state.villagers) drawVillager(v);
   for (const e of state.enemies) drawEnemy(e);
   drawPlayer();
-  drawBoat();   // barco na frente do player
-  drawBoatWake();   // rastro por cima do barco
+  drawBoat();  
+  drawBoatWake();   
   for (const a of state.arrows) drawArrow(a);
   for (const p of state.particles) {
     ctx.globalAlpha = clamp(p.life * 2, 0, 1);
@@ -807,6 +821,14 @@ function draw() {
   else { manageRects = []; hoveredStruct = null; }
   drawHUD(nf);
   drawBoatPrompt();
+  if (state.showFps) {
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillStyle = '#000';
+    ctx.fillText(`FPS: ${Math.round(fpsSmooth)}`, 17, 105);
+    ctx.fillStyle = '#7ec74f';
+    ctx.fillText(`FPS: ${Math.round(fpsSmooth)}`, 16, 104);
+  }
   if (state.helpOn) drawHelp();
   if (state.paused) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -817,6 +839,41 @@ function draw() {
     ctx.fillText('PAUSADO', W / 2, H / 2);
   }
   if (state.boatMenu) drawBoatMenu();
+  if (state.menu.open) drawMenu();
+}
+
+function drawMenu() {
+  menuRects = [];
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  const bw = 280, bh = 50, gap = 16;
+  ctx.textAlign = 'center';
+
+  const btn = (label, y, action, on) => {
+    const x = (W - bw) / 2;
+    menuRects.push({ x, y, w: bw, h: bh, action });
+    ctx.fillStyle = on === undefined ? 'rgba(40,40,60,0.95)' : (on ? 'rgba(40,120,55,0.95)' : 'rgba(120,50,45,0.95)');
+    ctx.fillRect(x, y, bw, bh);
+    ctx.strokeStyle = '#e7b93c'; ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px system-ui';
+    ctx.fillText(label, W / 2, y + 32);
+  };
+
+  if (state.menu.page === 'main') {
+    ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 30px system-ui';
+    ctx.fillText('MENU', W / 2, H / 2 - 110);
+    let y = H / 2 - 60;
+    btn('Configurações', y, () => state.menu.page = 'config'); y += bh + gap;
+    btn('Continuar', y, () => state.menu.open = false);
+  } else {
+    ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 30px system-ui';
+    ctx.fillText('CONFIGURAÇÕES', W / 2, H / 2 - 110);
+    let y = H / 2 - 60;
+    btn(`FPS: ${state.showFps ? 'Ligado' : 'Desligado'}`, y, () => state.showFps = !state.showFps, state.showFps); y += bh + gap;
+    btn('Voltar', y, () => state.menu.page = 'main');
+  }
 }
 
 function drawBoatPrompt() {
@@ -826,7 +883,7 @@ function drawBoatPrompt() {
   if (!nearBoatHouse || state.boatMenu || state.build.active || state.helpOn || state.paused) return;
 
   const sx = p.x - camX;
-  const cy = p.y - 84;       // acima da cabeça do player
+  const cy = p.y - 84;      
   const s = 26;
   const x = sx - s / 2, y = cy - s / 2;
   boatBtnRect = { x, y, w: s, h: s };
@@ -910,7 +967,7 @@ function drawSky(nf) {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  const bgDrop = 0;   // ajuste vertical da nuvem
+  const bgDrop = 0;   
   if (bgImg.complete && bgImg.naturalWidth) {
     const cw = W, bh = waterLevel(), base = cloudX - camX;
     for (let off = -WORLD_W; off <= WORLD_W; off += WORLD_W) {   // wrap no mapa
@@ -952,17 +1009,19 @@ function drawSky(nf) {
 }
 function drawSkyMoonShadow(nf) { return lerpC([6, 8, 32], [6, 8, 32], nf); }
 
-function drawReflection() {     // espelho da cena abaixo da linha d'água, ondulado em faixas
+function drawReflection() {     
   const wl = waterLevel();
   ctx.save();
   ctx.globalAlpha = 0.65;
-  for (let Y = wl; Y < H; Y++) {             // faixas de 1px → ondulação suave (sem serrilhar)
-    const srcY = 2 * wl - Y;                 // linha de origem (acima da água)
-    if (srcY <= 0) break;
-    const depth = Y - wl;                    // distância abaixo da superfície
-    const amp = Math.min(5, depth * 0.03);   // distorção cresce com a profundidade (nuvem ondula mais)
-    const dx = Math.sin(animT * 0.45 + Y * 0.035) * amp;   // bem devagar
-    ctx.drawImage(canvas, 0, srcY - 1, W, 1, dx, Y, W, 1);
+  const BAND = 4;                            
+  for (let Y = wl; Y < H; Y += BAND) {
+    const h = Math.min(BAND, H - Y);
+    const srcY = 2 * wl - Y;                 
+    if (srcY - h <= 0) break;
+    const depth = Y - wl;                   
+    const amp = Math.min(5, depth * 0.03);  
+    const dx = Math.sin(animT * 0.45 + Y * 0.035) * amp;  
+    ctx.drawImage(canvas, 0, srcY - h, W, h, dx, Y, W, h);
   }
   ctx.restore();
 }
@@ -970,7 +1029,7 @@ function drawReflection() {     // espelho da cena abaixo da linha d'água, ondu
 function drawGround(nf) {
 
   const g = ctx.createLinearGradient(0, H * 0.85, 0, H);
-  g.addColorStop(0, 'rgba(170, 158, 200, 0.34)');   // água cristalina
+  g.addColorStop(0, 'rgba(170, 158, 200, 0.34)');  
   g.addColorStop(1, 'rgba(196, 174, 196, 0.40)');
   ctx.fillStyle = g;
   ctx.beginPath();
@@ -1037,16 +1096,16 @@ function drawTorches() {
   const torchDrop = 5;       
   const fireDrop = 20;       
   const baseY = floorY() + torchDrop;
-  for (const tx of torches) {   // tochas concluídas (1 a cada 2 plataformas)
+  for (const tx of torches) { 
     const sx = tx - camX;
     if (sx < -60 || sx > W + 60) continue;
     const tw = torchImg.naturalWidth ? th * (torchImg.naturalWidth / torchImg.naturalHeight) : th * 0.3;
     if (torchImg.complete && torchImg.naturalWidth) ctx.drawImage(torchImg, sx - tw / 2, baseY - th, tw, th);
-    if (nf > 0.4) {            // acende à noite
+    if (nf > 0.4) {           
       const a = clamp((nf - 0.4) / 0.4, 0, 1);
       const topY = baseY - th + 6 + fireDrop;
       const fh = 30 + Math.sin(animT * 3 + tx) * 3;
-      const tilt = Math.sin(animT * 2 + tx) * 0.1;   // pende a partir do pé
+      const tilt = Math.sin(animT * 2 + tx) * 0.1;  
       const fw = fireImg.naturalWidth ? fh * (fireImg.naturalWidth / fireImg.naturalHeight) : fh;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -1059,7 +1118,7 @@ function drawTorches() {
       ctx.globalAlpha = a;
       if (fireImg.complete && fireImg.naturalWidth) {
         ctx.save();
-        ctx.translate(sx, topY);   // pé da barriga do fogo fixado
+        ctx.translate(sx, topY);  
         ctx.rotate(tilt);
         ctx.drawImage(fireImg, -fw / 2, -fh, fw, fh);
         ctx.restore();
@@ -1085,14 +1144,14 @@ function drawCampfireBase() {
   ctx.restore();
 }
 
-function buildBar(sx, topY, prog) {   // barra de progresso de obra
+function buildBar(sx, topY, prog) {  
   ctx.fillStyle = 'rgba(0,0,0,0.5)';
   ctx.fillRect(sx - 40, topY, 80, 6);
   ctx.fillStyle = '#7ec74f';
   ctx.fillRect(sx - 40, topY, 80 * clamp(prog, 0, 1), 6);
 }
 
-function drawPlatformBuild(s) {   // plataforma em obra (fantasma sobre a água)
+function drawPlatformBuild(s) {  
   const sx = s.x - camX;
   if (sx < -PLAT_W || sx > W + PLAT_W) return;
   const wl = waterLevel();
@@ -1111,7 +1170,7 @@ function drawPlatformBuild(s) {   // plataforma em obra (fantasma sobre a água)
   buildBar(sx, wl - PLAT_VIS - 16, s.progress / s.t.tempo);
 }
 
-function drawTorchBuild(s) {   // tocha em obra (fantasma sobre o deck)
+function drawTorchBuild(s) {  
   const sx = s.x - camX;
   if (sx < -60 || sx > W + 60) return;
   const th = 80;
@@ -1273,7 +1332,7 @@ function drawStructureShape(key, level) {
       ctx.closePath(); ctx.fill();
     }
   } else if (key === 'ferreiro') {
-    const h = 74;   // base; o contexto é escalado por STRUCT_SCALE
+    const h = 74;  
     const w = ferreiroImg.naturalWidth ? h * (ferreiroImg.naturalWidth / ferreiroImg.naturalHeight) : 70;
     if (ferreiroImg.complete && ferreiroImg.naturalWidth) {
       ctx.drawImage(ferreiroImg, -w / 2, -h, w, h);
@@ -1281,7 +1340,7 @@ function drawStructureShape(key, level) {
       ctx.fillStyle = '#5a5550';
       ctx.fillRect(-w / 2, -h, w, h);
     }
-  } else if (key === 'plataforma') {   // ícone do deck (hotbar/ghost)
+  } else if (key === 'plataforma') {  
     ctx.fillStyle = '#6b4a2f';
     ctx.fillRect(-40, -16, 80, 12);
     ctx.fillStyle = '#8a6440';
@@ -1318,13 +1377,13 @@ function drawVillager(v) {
   const ratio = aldeaoImg.naturalWidth ? aldeaoImg.naturalWidth / aldeaoImg.naturalHeight : 0.6;
   const w = h * ratio;
 
-  // posição vertical animada (transição suave deck ↔ água); recorta sob a linha d'água
+  
   const wl = waterLevel();
   const baseY = (v.drawY != null) ? v.drawY : y;
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, W, wl);         // só desenha acima da água (submerge ao cair)
+  ctx.rect(0, 0, W, wl);       
   ctx.clip();
   ctx.translate(sx, baseY - hop);
   ctx.rotate(tilt);
@@ -1346,10 +1405,10 @@ function drawEnemy(e) {
   const img = enemyImgs[Math.floor(animT * 8 + e.bob) % enemyImgs.length];
   const dir = e.dir || (e.x < SPAWN_X ? 1 : -1);
   const h = 46, w = img.naturalWidth ? h * (img.naturalWidth / img.naturalHeight) : h * 1.7;
-  const waterY = y + h * 0.05;   // linha d'água: ~metade do corpo submersa
+  const waterY = y + h * 0.05; 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, W, waterY);     // só desenha acima da água
+  ctx.rect(0, 0, W, waterY);    
   ctx.clip();
   ctx.translate(sx, y + bob);
   ctx.scale(dir, 1);
@@ -1361,7 +1420,7 @@ function drawEnemy(e) {
   }
   ctx.restore();
 
-  // mesma animação de água do barco, sob o inimigo
+  
   const wimg = wakeImgs[Math.floor(animT * 8 + e.bob) % wakeImgs.length];
   if (wimg.complete && wimg.naturalWidth) {
     const ww = w * 1.6, wh = ww * (wimg.naturalHeight / wimg.naturalWidth);
@@ -1375,7 +1434,7 @@ function drawEnemy(e) {
 }
 
 function boatBob() {
-  return Math.sin(animT * 2) * 3;   // sobe-e-desce sempre, parado ou em movimento
+  return Math.sin(animT * 2) * 3;  
 }
 
 function drawBoatWake() {
@@ -1405,15 +1464,14 @@ function drawBoat() {
   const ghost = p.boatSkin === 'ghost';
   const ready = boatImg.complete && boatImg.naturalWidth > 0;
 
-  // reflexo do barco na água (espelhado verticalmente e desbotado)
+  
   if (ready) {
     ctx.save();
     ctx.translate(sx, baseY);
     ctx.scale(dir, -1);
     ctx.globalAlpha = 0.28;
-    const ripple = Math.sin(animT * 2) * 0;   // ondulação no mesmo ritmo do barco
+    const ripple = Math.sin(animT * 2) * 0;  
     ctx.transform(1, ripple, 0, 1, 0, 0);
-    // desenha espelhado para BAIXO da linha d'água
     ctx.drawImage(spr, -w / 2, -h * 1.61, w, h);
     ctx.restore();
   }
@@ -1421,7 +1479,7 @@ function drawBoat() {
   ctx.save();
   ctx.translate(sx, baseY);
   ctx.scale(dir, 1);
-  if (ghost) ctx.globalAlpha = 0.7;   // fantasma
+  if (ghost) ctx.globalAlpha = 0.7;  
 
   if (ready) {
     ctx.drawImage(spr, -w / 2, -h * 0.28, w, h);
@@ -1435,9 +1493,9 @@ function drawBoat() {
 function drawPlayer() {
   const p = state.player;
   let sx = p.x - camX;
-  let y = (p.drawY != null) ? p.drawY : p.y;   // posição vertical animada (cair/subir)
+  let y = (p.drawY != null) ? p.drawY : p.y; 
   const onLand = p.mode !== 'boat';
-  const swimming = p.mode === 'boat' && !p.onBoat;   // na água sem barco
+  const swimming = p.mode === 'boat' && !p.onBoat;   
   const moving = onLand && Math.abs(p.vx) > 12;
   const bob = moving ? Math.abs(Math.sin(animT * 10)) * 3 : 0;
   const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0;
@@ -1446,13 +1504,13 @@ function drawPlayer() {
   const ratio = playerImg.naturalWidth ? playerImg.naturalWidth / playerImg.naturalHeight : 0.6;
   const w = h * ratio;
 
-  if (p.mode === 'boat' && p.onBoat) {       // colado no barco
+  if (p.mode === 'boat' && p.onBoat) {      
     const bw = boatImg.naturalWidth ? 60 * (boatImg.naturalWidth / boatImg.naturalHeight) : 180;
     sx -= p.dir * bw * 0.2;
   }
 
   ctx.save();
-  if (swimming) {              // metade do corpo submersa ao nadar
+  if (swimming) {             
     ctx.beginPath();
     ctx.rect(0, 0, W, waterLevel());
     ctx.clip();
@@ -1563,7 +1621,7 @@ function structUnderMouse() {
   const wx = mouse.x + camX;
   for (const s of state.structures) {
     if (s.dead) continue;
-    if (s.key === 'plataforma' || s.key === 'tocha') continue;   // obras automáticas, sem gerência
+    if (s.key === 'plataforma' || s.key === 'tocha') continue; 
     if (Math.abs(s.x - wx) > s.t.w / 2 + 12) continue;
     const gy = structGroundY(s);
     if (mouse.y >= gy - structH(s) - 18 && mouse.y <= gy + 16) return s;
@@ -1739,7 +1797,8 @@ let lastTs = 0;
 function frame(ts) {
   const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0.016);
   lastTs = ts;
-  if (!state.paused) update(dt);
+  if (dt > 0) fpsSmooth = lerp(fpsSmooth, 1 / dt, 0.1);
+  if (!state.paused && !state.menu.open) update(dt);
   draw();
   requestAnimationFrame(frame);
 }
