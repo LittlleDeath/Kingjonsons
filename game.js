@@ -86,6 +86,7 @@ const state = {
   boatMenu: false,
   menu: { open: false, page: 'main' },   // menu Esc
   showFps: false,
+  waterReflection: true,
   structures: [],
   villagers: [],
   enemies: [],
@@ -150,7 +151,7 @@ let camX = 0;
 let animT = 0;
 let cloudX = SPAWN_X;  
 let boatIdle = 0;    
-let wakeFade = 0;   
+let wakeFade = 0;
 let spawnTimer = 3;
 let hotbarRects = [];
 let manageRects = [];
@@ -592,6 +593,8 @@ function moveToward(o, x, speed, dt) {
   const d = x - o.x;
   if (Math.abs(d) < 3) return true;
   o.dir = d > 0 ? 1 : -1;
+  // subindo da água pra plataforma
+  if (onPlatform(o.x) && o.drawY != null && o.drawY > floorY() + 8) speed *= 0.1;
   o.x += o.dir * speed * dt;
   o.walk = (o.walk || 0) + dt * 9;
   return false;
@@ -605,7 +608,7 @@ const VILL_H = 54;
 function animVillagerY(v, dt) {
   const target = onPlatform(v.x) ? floorY() : waterLevel() + VILL_H * 0.5;
   if (v.drawY == null) { v.drawY = target; v.dvy = 0; return; }
-  if (target > v.drawY + 0.5) {            // caindo na água
+  if (target > v.drawY + 0.5) {         
     v.dvy = (v.dvy || 0) + 1100 * dt;
     v.drawY = Math.min(target, v.drawY + v.dvy * dt);
     if (v.drawY >= target) v.dvy = 0;
@@ -793,9 +796,9 @@ function draw() {
   for (const s of state.structures) drawStructure(s);
   drawPlatforms();
   drawTorches();
-  drawReflection();            
-  drawGround(nf);              
-  drawPlatforms();           
+  drawReflection();
+  drawGround(nf);
+  drawPlatforms();
   for (const c of state.pickups) drawCoin(c);
   for (const v of state.villagers) drawVillager(v);
   for (const e of state.enemies) drawEnemy(e);
@@ -872,6 +875,7 @@ function drawMenu() {
     ctx.fillText('CONFIGURAÇÕES', W / 2, H / 2 - 110);
     let y = H / 2 - 60;
     btn(`FPS: ${state.showFps ? 'Ligado' : 'Desligado'}`, y, () => state.showFps = !state.showFps, state.showFps); y += bh + gap;
+    btn(`Reflexo na água: ${state.waterReflection ? 'Ligado' : 'Desligado'}`, y, () => state.waterReflection = !state.waterReflection, state.waterReflection); y += bh + gap;
     btn('Voltar', y, () => state.menu.page = 'main');
   }
 }
@@ -1007,9 +1011,11 @@ function drawSky(nf) {
     ctx.beginPath(); ctx.arc(mx - 8, my - 4, 17, 0, Math.PI * 2); ctx.fill();
   }
 }
+
 function drawSkyMoonShadow(nf) { return lerpC([6, 8, 32], [6, 8, 32], nf); }
 
-function drawReflection() {     
+function drawReflection() {
+  if (!state.waterReflection) return;
   const wl = waterLevel();
   ctx.save();
   ctx.globalAlpha = 0.65;
@@ -1395,6 +1401,9 @@ function drawVillager(v) {
     ctx.fillRect(-w / 2, -h, w, h);
   }
   ctx.restore();
+
+  // água só quando realmente entra/encosta na água
+  if (!onPlatform(v.x) && baseY >= wl - 1) drawWaterAnim(sx, wl, w * 2, v.dir);
 }
 
 function drawEnemy(e) {
@@ -1524,6 +1533,22 @@ function drawPlayer() {
     ctx.fillStyle = '#7d2436';
     ctx.fillRect(-w / 2, -h, w, h);
   }
+  ctx.restore();
+
+  // água só quando realmente entra/encosta na água
+  if (swimming && y >= waterLevel() - 1) drawWaterAnim(sx, waterLevel(), w * 2, p.dir);
+}
+
+// animação de água (water-anim) sob algo encostando na água
+function drawWaterAnim(sx, wy, ww, dir) {
+  const wimg = wakeImgs[Math.floor(animT * 8) % wakeImgs.length];
+  if (!wimg.complete || !wimg.naturalWidth) return;
+  const wh = ww * (wimg.naturalHeight / wimg.naturalWidth);
+  ctx.save();
+  ctx.translate(sx, wy + 2);
+  ctx.scale(dir || 1, 1);
+  ctx.globalAlpha = 0.7;
+  ctx.drawImage(wimg, -ww / 2, -wh / 2, ww, wh);
   ctx.restore();
 }
 
