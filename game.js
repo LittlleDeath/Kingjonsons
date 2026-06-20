@@ -1694,7 +1694,7 @@ function drawHUD(nf) {
   ctx.font = '15px system-ui';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillText(`Aldeões: ${state.villagers.length}`, 16, 62);
-  ctx.fillText(`Dia ${state.day} ${nf > 0.5 ? '🌙' : '☀️'}`, 16, 84);
+  ctx.fillText(`Dia ${state.day} ${nf > 0.5 ? '' : ''}`, 16, 84);
 
   ctx.textAlign = 'right';
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
