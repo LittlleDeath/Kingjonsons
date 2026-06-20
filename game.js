@@ -1,12 +1,5 @@
 'use strict';
 
-// ============================================================
-// REINO — protótipo estilo Kingdom Two Crowns
-// Construção livre: aperte B, escolha a estrutura (1-4) e
-// clique em QUALQUER lugar do mundo para posicionar.
-// ============================================================
-
-// ---------- Canvas ----------
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0;
@@ -14,29 +7,21 @@ function resize() { W = canvas.width = window.innerWidth; H = canvas.height = wi
 window.addEventListener('resize', resize);
 resize();
 
-// ---------- Mundo ----------
-const WORLD_W = 7000;          // largura total do mundo em pixels
-const SPAWN_X = WORLD_W / 2;   // centro do reino (fogueira)
-const DAY_LEN = 70;            // segundos de dia
-const CYCLE = 105;             // dia + noite
+const WORLD_W = 7000;          // largura do mundo (px)
+const SPAWN_X = WORLD_W / 2;
+const DAY_LEN = 70;            // s de dia
+const CYCLE = 105;            // ciclo dia+noite
 
-// Oceano: água com ondulações suaves
-function terrainY(x) {
-  return H * 0.85 + Math.sin(x * 0.003 + animT * 0.5) * 8;
+function terrainY(x) {        // superfície da água (calma, sem movimento)
+  return H * 0.85;
 }
-// Nível da água (base do oceano)
 const waterLevel = () => H * 0.85;
-// Deck no topo da plataforma; as perninhas tocam a linha d'água embaixo.
-// DECK_INSET abaixa onde a casa/personagens/colisão ficam, pra sentar no
-// deck real (a sprite tem um "toco" no topo). Só mexe nisso pra calibrar.
-const DECK_INSET = 22;
-const floorY = () => waterLevel() - PLAT_VIS + DECK_INSET;
-// Está sobre o píer? (região coberta pelas duas plataformas: SPAWN_X ± PLAT_W)
-const onPlatform = (x) => Math.abs(x - SPAWN_X) <= PLAT_W;
-// Altura do chão em x: deck do píer ou superfície da água
-const groundY = (x) => onPlatform(x) ? floorY() : waterLevel();
 
-// ---------- Tipos de estrutura ----------
+const DECK_INSET = 22;        // ajuste do deck sobre a sprite
+const floorY = () => waterLevel() - PLAT_VIS + DECK_INSET;
+const onPlatform = (x) => Math.abs(x - SPAWN_X) <= PLAT_W;
+const groundY = (x) => onPlatform(x) ? floorY() : waterLevel();   // deck ou água
+
 const TYPES = {
   muralha: { nome: 'Muralha', custo: 4,  w: 26, h: 58, tempo: 4, hp: 80 },
   tenda:   { nome: 'Tenda',   custo: 6,  w: 48, h: 44, tempo: 5, hp: 40 },
@@ -45,27 +30,24 @@ const TYPES = {
 };
 const ORDER = ['muralha', 'tenda', 'fazenda', 'torre'];
 
-// ---------- Níveis de melhoria ----------
-// Índice 0 = nível 1 (base, igual ao TYPES). custoUp = preço para subir
-// vindo do nível anterior. h/hp/range/fireRate sobrescrevem a base.
-// Adicionar um nível novo é só acrescentar um item aqui.
+// níveis por tipo; índice 0 = base, custoUp = preço pra subir
 const LEVELS = {
   muralha: [
     { hp: 80 },
-    { custoUp: 6,  hp: 180, h: 76 },                          // Muralha II
+    { custoUp: 6,  hp: 180, h: 76 },
   ],
   tenda:   [{ hp: 40 }],
   fazenda: [{ hp: 40 }],
   torre:   [
     { hp: 60,  range: 300, fireRate: 1.4 },
-    { custoUp: 10, hp: 120, h: 104, range: 410, fireRate: 0.9 }, // Torre II
+    { custoUp: 10, hp: 120, h: 104, range: 410, fireRate: 0.9 },
   ],
 };
-const REFUND = 0.7; // demolição devolve 70% do investido
+const REFUND = 0.7;           // reembolso ao demolir
 
 function maxLevel(key) { return LEVELS[key].length; }
 function structH(s) { return s.dispH || s.t.h; }
-// Aplica os status do nível atual à estrutura
+
 function applyLevel(s) {
   const d = LEVELS[s.key][s.level - 1];
   s.hpMax = d.hp;
@@ -73,18 +55,18 @@ function applyLevel(s) {
   s.range = d.range || 0;
   s.fireRate = d.fireRate || 0;
 }
-// Custo para melhorar (null se já está no nível máximo)
+
 function upgradeCost(s) {
   if (s.level >= maxLevel(s.key)) return null;
   return LEVELS[s.key][s.level].custoUp;
 }
 
-// ---------- Estado ----------
 const state = {
   coins: 25,
   day: 1,
   time: 0,
   paused: false,
+  timeFrozen: false,
   player: { x: SPAWN_X + 60, y: 0, vx: 0, vy: 0, dir: 1 },
   structures: [],
   villagers: [],
@@ -94,28 +76,23 @@ const state = {
   particles: [],
   build: { active: false, sel: 0 },
   msg: { text: '', t: 0 },
-  helpOn: true,
+  helpOn: false,
 };
 
-// Plataformas no oceano. Largura de desenho derivada do aspecto da sprite
-// (1561x1389 ≈ 1.12). As duas ficam encostadas → "efeito infinito".
-// A sprite tem ~48% transparente no topo; só os ~52% de baixo é o píer.
+// sprite do píer ~48% transparente no topo;
 const PLAT_TOP_FRAC = 0.479, PLAT_BOT_FRAC = 0.999;
-const PLAT_VIS = 120;                                        // altura visível do píer
-const PLAT_H = PLAT_VIS / (PLAT_BOT_FRAC - PLAT_TOP_FRAC);   // altura de desenho da sprite
+const PLAT_VIS = 120;         // altura visível do píer
+const PLAT_H = PLAT_VIS / (PLAT_BOT_FRAC - PLAT_TOP_FRAC);
 const PLAT_W = PLAT_H * (1561 / 1389);
 const platforms = [
   { x: SPAWN_X - PLAT_W / 2, img: 'plat1' },
   { x: SPAWN_X + PLAT_W / 2, img: 'plat2' },
 ];
 
-// Casa-de-barco (castelo do oceano), centrada sobre as plataformas
 const house = { x: SPAWN_X };
 
-// Player começa em pé no deck
 state.player.y = floorY();
 
-// Sprites
 const aldeaoImg = new Image();
 aldeaoImg.src = 'aldeao.png';
 const playerImg = new Image();
@@ -128,25 +105,30 @@ const houseImg = new Image();
 houseImg.src = 'casa-de-barco.png';
 const boatImg = new Image();
 boatImg.src = 'barco.png';
+const wakeImgs = [1, 2, 3, 4].map(n => { const i = new Image(); i.src = `barco-anim/${n}.png`; return i; });
+const enemyImgs = [1, 2, 3, 4, 5, 6, 7].map(n => { const i = new Image(); i.src = `enemy-anim/IMG_2437_${n}.png`; return i; });
+const torchImg = new Image();
+torchImg.src = 'firetorch/torch.png';
+const fireImg = new Image();
+fireImg.src = 'firetorch/fire.png';
 let camX = 0;
 let animT = 0;
+let boatIdle = 0;     // 0 = movendo, 1 = parado (suavizado)
 let spawnTimer = 3;
 let hotbarRects = [];
-let manageRects = [];      // hitboxes dos botões Melhorar/Demolir
-let hoveredStruct = null;  // estrutura sob o mouse (fora do modo construção)
+let manageRects = [];
+let uiRects = [];
+let hoveredStruct = null;
 
-// Aldeões iniciais (para construírem a primeira tenda)
 state.villagers.push(newVillager(SPAWN_X - 40, null));
 state.villagers.push(newVillager(SPAWN_X + 30, null));
 
-// Moedas espalhadas pelo mapa (incentivo a explorar)
 for (let i = 0; i < 12; i++) {
   const side = i % 2 ? 1 : -1;
   const x = SPAWN_X + side * (260 + hash(i + 3) * 2300);
   state.pickups.push({ x, y: 0, vy: 0, grounded: true });
 }
 
-// Árvores decorativas (posições determinísticas)
 const TREES = [];
 for (let i = 0; i < 26; i++) {
   const x = 150 + hash(i * 3 + 1) * (WORLD_W - 300);
@@ -154,14 +136,13 @@ for (let i = 0; i < 26; i++) {
   TREES.push({ x, s: 0.7 + hash(i * 7 + 2) * 0.6, v: hash(i * 13 + 3) });
 }
 
-// ---------- Utilidades ----------
 function hash(n) { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpC(a, b, t) {
   return `rgb(${Math.round(lerp(a[0], b[0], t))},${Math.round(lerp(a[1], b[1], t))},${Math.round(lerp(a[2], b[2], t))})`;
 }
-// 0 = dia pleno, 1 = noite plena (com transições suaves)
+
 function nightFactor() {
   const t = state.time;
   if (t < DAY_LEN - 4) return 0;
@@ -171,34 +152,43 @@ function nightFactor() {
 }
 function showMsg(text) { state.msg.text = text; state.msg.t = 2.4; }
 
+function toggleDayNight() {
+  state.time = nightFactor() > 0.5 ? 10 : DAY_LEN + 8;
+}
+
 function newVillager(x, home) {
   return { x, dir: 1, st: 'idle', tgt: null, goal: x, wt: 0, home, swing: 0, walk: 0 };
 }
 
-// ---------- Entrada ----------
 const keys = {};
 const mouse = { x: 0, y: 0 };
 
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   const k = e.key.toLowerCase();
-  if (k === 'b') { state.build.active = !state.build.active; state.helpOn = false; }
+  if (k === 'b') showMsg('desabilitado pra fudidos nao jogarem, vai terminar os desenhos');
   if (k === 'escape') state.build.active = false;
   if (k === 'h') state.helpOn = !state.helpOn;
   if (k === 'p') state.paused = !state.paused;
-  // gerenciar estrutura sob o mouse (fora do modo construção)
+
   if (k === 'u' && !state.build.active && hoveredStruct) tryUpgrade(hoveredStruct);
   if (k === 'x' && !state.build.active && hoveredStruct) demolish(hoveredStruct);
-  const d = ORDER.findIndex((_, i) => k === String(i + 1));
-  if (d >= 0) { state.build.sel = d; if (!state.build.active) state.build.active = true; }
+  // const d = ORDER.findIndex((_, i) => k === String(i + 1));
+  // if (d >= 0) { state.build.sel = d; if (!state.build.active) state.build.active = true; }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
 canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
+  for (const r of uiRects) {
+    if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+      r.action();
+      return;
+    }
+  }
   if (state.build.active) {
-    // clique na hotbar seleciona; clique no mundo posiciona
+
     for (let i = 0; i < hotbarRects.length; i++) {
       const r = hotbarRects[i];
       if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
@@ -208,7 +198,7 @@ canvas.addEventListener('mousedown', e => {
     }
     tryPlace();
   } else {
-    // fora do modo construção: clique nos botões Melhorar/Demolir
+
     for (const r of manageRects) {
       if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
         r.action();
@@ -223,9 +213,6 @@ canvas.addEventListener('wheel', e => {
   state.build.sel = (state.build.sel + (e.deltaY > 0 ? 1 : ORDER.length - 1)) % ORDER.length;
 });
 
-// ---------- Construção livre (o coração do protótipo) ----------
-// Converte a posição do mouse (tela) para o mundo, valida o local
-// e cria um canteiro de obras que os aldeões vêm construir.
 function validatePlacement(wx, key) {
   const t = TYPES[key];
   if (state.coins < t.custo) return { ok: false, reason: 'Moedas insuficientes' };
@@ -274,7 +261,6 @@ function destroyStructure(s) {
   showMsg(`${s.t.nome} foi destruída!`);
 }
 
-// Melhora a estrutura para o próximo nível (repara e fortalece).
 function tryUpgrade(s) {
   if (!s || s.dead) return;
   if (!s.built) { showMsg('Espere a obra terminar'); return; }
@@ -285,12 +271,11 @@ function tryUpgrade(s) {
   s.invested += cost;
   s.level++;
   applyLevel(s);
-  s.hp = s.hpMax; // melhoria também repara
+  s.hp = s.hpMax;
   showMsg(`${s.t.nome} melhorada → nível ${s.level}!`);
   for (let i = 0; i < 18; i++) spawnParticle(s.x, terrainY(s.x) - structH(s) / 2, '#ffe9a8');
 }
 
-// Demole a estrutura REFUND (70%) do total investido.
 function demolish(s) {
   if (!s || s.dead) return;
   const refund = Math.round(s.invested * REFUND);
@@ -300,14 +285,17 @@ function demolish(s) {
   for (let i = 0; i < 14; i++) spawnParticle(s.x, terrainY(s.x) - structH(s) / 2, '#ffd23e');
 }
 
-// ---------- Atualização ----------
 function update(dt) {
   animT += dt;
-  state.time += dt;
-  if (state.time >= CYCLE) {
-    state.time -= CYCLE;
-    state.day++;
-    showMsg(`Dia ${state.day}`);
+  const idleTarget = Math.abs(state.player.vx) > 12 ? 0 : 1;
+  boatIdle = lerp(boatIdle, idleTarget, 1 - Math.pow(0.001, dt));
+  if (!state.timeFrozen) {
+    state.time += dt;
+    if (state.time >= CYCLE) {
+      state.time -= CYCLE;
+      state.day++;
+      showMsg(`Dia ${state.day}`);
+    }
   }
   if (state.msg.t > 0) state.msg.t -= dt;
 
@@ -338,8 +326,8 @@ function updatePlayer(dt) {
   p.vx = lerp(p.vx, mv * speed, 1 - Math.pow(0.0015, dt));
   p.x = clamp(p.x + p.vx * dt, 30, WORLD_W - 30);
   if (mv !== 0) p.dir = mv;
-  // gravidade: cai até pousar no deck do píer (ou na água, fora dele)
-  p.vy += 1400 * dt;
+
+  p.vy += 1400 * dt;           // gravidade: pousa no deck ou na água
   p.y += p.vy * dt;
   const gy = groundY(p.x);
   if (p.y >= gy) { p.y = gy; p.vy = 0; }
@@ -349,7 +337,7 @@ function updateStructures(dt) {
   const nf = nightFactor();
   for (const s of state.structures) {
     if (!s.built) continue;
-    // fazendas produzem moedas de dia
+
     if (s.key === 'fazenda' && nf < 0.5) {
       s.ct += dt;
       if (s.ct > 11 && state.pickups.length < 40) {
@@ -360,7 +348,7 @@ function updateStructures(dt) {
         });
       }
     }
-    // torres atiram no monstro mais próximo
+
     if (s.key === 'torre') {
       s.cd -= dt;
       if (s.cd <= 0) {
@@ -397,7 +385,7 @@ function updateVillagers(dt) {
   for (const v of state.villagers) {
     v.st = 'idle';
     if (night) {
-      // à noite todo mundo volta pra casa (tenda ou fogueira)
+
       releaseTarget(v);
       const hx = (v.home && !v.home.dead) ? v.home.x : SPAWN_X;
       moveToward(v, hx + 10, 70, dt);
@@ -405,7 +393,7 @@ function updateVillagers(dt) {
     }
     if (v.tgt && (v.tgt.dead || v.tgt.built)) releaseTarget(v);
     if (!v.tgt) {
-      // procura canteiro de obras com vaga (máx. 2 por obra)
+
       let best = null, bd = 1e9;
       for (const s of state.structures) {
         if (s.built || s.dead || s.workers >= 2) continue;
@@ -425,7 +413,7 @@ function updateVillagers(dt) {
         if (v.tgt.progress >= v.tgt.t.tempo) completeStructure(v.tgt);
       }
     } else {
-      // perambula perto de casa
+
       v.wt -= dt;
       if (v.wt <= 0) {
         v.wt = 2 + Math.random() * 3;
@@ -456,11 +444,12 @@ function updateEnemies(dt) {
     if (e.dead) continue;
     if (e.flee) {
       const dir = e.x < SPAWN_X ? -1 : 1;
+      e.dir = dir;
       e.x += dir * e.sp * 2.2 * dt;
       if (Math.abs(e.x - SPAWN_X) > 2700 || e.x < 40 || e.x > WORLD_W - 40) e.dead = true;
       continue;
     }
-    // estrutura no caminho? ataca
+
     let blocker = null;
     for (const s of state.structures) {
       if (s.dead) continue;
@@ -476,7 +465,7 @@ function updateEnemies(dt) {
       }
       continue;
     }
-    // rouba moedas do rei
+
     if (Math.abs(e.x - p.x) < 16) {
       const roubo = Math.min(3, state.coins);
       state.coins -= roubo;
@@ -488,6 +477,7 @@ function updateEnemies(dt) {
       continue;
     }
     const dir = e.x < SPAWN_X ? 1 : -1;
+    e.dir = dir;
     e.x += dir * e.sp * dt;
   }
 }
@@ -557,7 +547,6 @@ function updateParticles(dt) {
   }
 }
 
-// ---------- Desenho ----------
 function draw() {
   const nf = nightFactor();
   drawSky(nf);
@@ -569,10 +558,12 @@ function draw() {
   for (const c of state.pickups) drawCoin(c);
   for (const v of state.villagers) drawVillager(v);
   for (const e of state.enemies) drawEnemy(e);
-  drawBoat();
   drawPlayer();
+  drawBoat();   // barco na frente do player
+  drawBoatWake();   // rastro por cima do barco
   for (const a of state.arrows) drawArrow(a);
-  drawPlatforms(); // sempre na frente dos outros
+  drawPlatforms();             // por cima de tudo
+  drawTorches();
   for (const p of state.particles) {
     ctx.globalAlpha = clamp(p.life * 2, 0, 1);
     ctx.fillStyle = p.color;
@@ -580,7 +571,6 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
-  // escurecimento noturno + luzes por cima
   if (nf > 0.01) {
     ctx.fillStyle = `rgba(8,10,38,${nf * 0.42})`;
     ctx.fillRect(0, 0, W, H);
@@ -603,7 +593,7 @@ function draw() {
 }
 
 function drawSky(nf) {
-  // Céu oceano (dia = azul claro, noite = azul escuro)
+
   const top = nf < 0.5 ? '#4a7a9a' : '#0a1a2a';
   const bot = nf < 0.5 ? '#2a5a7a' : '#050a15';
   const g = ctx.createLinearGradient(0, 0, 0, H * 0.8);
@@ -612,7 +602,6 @@ function drawSky(nf) {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  // estrelas
   if (nf > 0.05) {
     for (let i = 0; i < 90; i++) {
       let sx = (hash(i) * 2.7 * W - camX * 0.05) % W;
@@ -626,7 +615,6 @@ function drawSky(nf) {
     ctx.globalAlpha = 1;
   }
 
-  // sol e lua
   if (state.time < DAY_LEN) {
     const p = state.time / DAY_LEN;
     const sx = W * (0.08 + 0.84 * p);
@@ -661,10 +649,10 @@ function drawRidge(par, base, amp1, f1, amp2, f2, color) {
 }
 
 function drawGround(nf) {
-  // Oceano: agua dark com ondas suaves
-  const g = ctx.createLinearGradient(0, H * 0.6, 0, H);
-  g.addColorStop(0, '#1a3a4a');
-  g.addColorStop(1, '#0d1f2a');
+
+  const g = ctx.createLinearGradient(0, H * 0.85, 0, H);
+  g.addColorStop(0, 'rgba(168, 152, 186, 0.78)');   // lilás na superfície
+  g.addColorStop(1, 'rgba(196, 168, 178, 0.82)');   // rosado no fundo
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(0, H);
@@ -672,8 +660,8 @@ function drawGround(nf) {
   ctx.lineTo(W, H);
   ctx.closePath();
   ctx.fill();
-  // onda no topo da agua
-  ctx.strokeStyle = '#2a5a7a';
+
+  ctx.strokeStyle = 'rgba(214, 196, 214, 0.55)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   for (let sx = 0; sx <= W + 6; sx += 6) {
@@ -704,18 +692,16 @@ function drawTrees(nf) {
   }
 }
 
-// Plataformas: o deck (topo da sprite) fica na linha d'água, o resto
-// afunda no oceano. Os personagens andam exatamente nesse deck.
-function drawPlatforms() {
+function drawPlatforms() {     // deck na linha d'água, casco afunda
   const wl = waterLevel();
   for (const p of platforms) {
     const sx = p.x - camX;
     const img = p.img === 'plat1' ? plat1Img : plat2Img;
-    const w = PLAT_W + 1; // +1 evita fresta entre as duas
+    const w = PLAT_W + 1;      // +1 fecha a fresta entre as duas
     if (sx < -w || sx > W + w) continue;
     ctx.save();
     ctx.translate(sx, wl);
-    const topOff = PLAT_TOP_FRAC * PLAT_H; // padding transparente acima do deck
+    const topOff = PLAT_TOP_FRAC * PLAT_H;
     if (img.complete && img.naturalWidth > 0) {
       ctx.drawImage(img, -w / 2, -PLAT_VIS - topOff, w, PLAT_H);
     } else {
@@ -726,7 +712,44 @@ function drawPlatforms() {
   }
 }
 
-// Casa-de-barco: base apoiada no deck (linha d'água)
+function drawTorches() {
+  const nf = nightFactor();
+  const th = 80;
+  const torchDrop = 5;       
+  const fireDrop = 20;       
+  const baseY = floorY() + torchDrop;
+  for (const tx of [SPAWN_X - PLAT_W * 0.85, SPAWN_X + PLAT_W * 0.85]) {
+    const sx = tx - camX;
+    if (sx < -60 || sx > W + 60) continue;
+    const tw = torchImg.naturalWidth ? th * (torchImg.naturalWidth / torchImg.naturalHeight) : th * 0.3;
+    if (torchImg.complete && torchImg.naturalWidth) ctx.drawImage(torchImg, sx - tw / 2, baseY - th, tw, th);
+    if (nf > 0.4) {            // acende à noite
+      const a = clamp((nf - 0.4) / 0.4, 0, 1);
+      const topY = baseY - th + 6 + fireDrop;
+      const fh = 30 + Math.sin(animT * 3 + tx) * 3;
+      const tilt = Math.sin(animT * 2 + tx) * 0.1;   // pende a partir do pé
+      const fw = fireImg.naturalWidth ? fh * (fireImg.naturalWidth / fireImg.naturalHeight) : fh;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(sx, topY, 4, sx, topY, 120);
+      g.addColorStop(0, `rgba(255,150,50,${a * 0.35})`);
+      g.addColorStop(1, 'rgba(255,150,50,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(sx - 120, topY - 120, 240, 240);
+      ctx.restore();
+      ctx.globalAlpha = a;
+      if (fireImg.complete && fireImg.naturalWidth) {
+        ctx.save();
+        ctx.translate(sx, topY);   // pé do fogo (fixo)
+        ctx.rotate(tilt);
+        ctx.drawImage(fireImg, -fw / 2, -fh, fw, fh);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
 function drawCampfireBase() {
   const sx = house.x - camX;
   const h = 130;
@@ -755,7 +778,7 @@ function drawStructure(s) {
     ctx.globalAlpha = 0.28;
     drawStructureShape(s.key, s.level);
     ctx.globalAlpha = 1;
-    // andaimes
+
     ctx.strokeStyle = '#7a5a33';
     ctx.lineWidth = 3;
     const w = s.t.w, h = structH(s);
@@ -766,14 +789,14 @@ function drawStructure(s) {
     ctx.moveTo(-w / 2 - 4, -h / 2); ctx.lineTo(w / 2 + 4, -h / 2);
     ctx.moveTo(-w / 2 - 4, 0); ctx.lineTo(w / 2 + 4, -h / 2);
     ctx.stroke();
-    // barra de progresso
+
     const pw = Math.max(w, 36);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(-pw / 2, -h - 14, pw, 6);
     ctx.fillStyle = '#7ec74f';
     ctx.fillRect(-pw / 2, -h - 14, pw * clamp(s.progress / s.t.tempo, 0, 1), 6);
   }
-  // barra de vida quando danificada
+
   if (s.built && s.hp < s.hpMax) {
     const pw = Math.max(s.t.w, 36);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -784,16 +807,14 @@ function drawStructure(s) {
   ctx.restore();
 }
 
-// Desenha a forma da estrutura com origem no centro da base.
-// level >= 2 desenha a versão melhorada (mais alta/reforçada).
 function drawStructureShape(key, level) {
   level = level || 1;
   if (key === 'muralha') {
     const big = level >= 2;
-    const bh = big ? 68 : 50;             // altura do corpo
+    const bh = big ? 68 : 50;
     ctx.fillStyle = big ? '#9aa0ad' : '#8d8896';
     ctx.fillRect(-13, -bh, 26, bh);
-    // ameias
+
     ctx.fillRect(-13, -bh - 8, 7, 9);
     ctx.fillRect(-3.5, -bh - 8, 7, 9);
     ctx.fillRect(6, -bh - 8, 7, 9);
@@ -803,7 +824,7 @@ function drawStructureShape(key, level) {
       ctx.beginPath(); ctx.moveTo(-13, yy); ctx.lineTo(13, yy); ctx.stroke();
     }
     if (big) {
-      // reforço de ferro + bandeirinha no topo
+
       ctx.strokeStyle = '#5a5f6b';
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(-13, -bh * 0.66); ctx.lineTo(13, -bh * 0.66); ctx.stroke();
@@ -846,7 +867,7 @@ function drawStructureShape(key, level) {
       ctx.fillStyle = '#e6bc55';
       ctx.fill();
     }
-    // celeiro
+
     ctx.fillStyle = '#6b4a32';
     ctx.fillRect(18, -24, 22, 24);
     ctx.fillStyle = '#4a3526';
@@ -858,7 +879,7 @@ function drawStructureShape(key, level) {
   } else if (key === 'torre') {
     const big = level >= 2;
     ctx.save();
-    if (big) ctx.scale(1.12, 1.2);       // Torre II: mais alta e larga
+    if (big) ctx.scale(1.12, 1.2);
     ctx.fillStyle = big ? '#9aa0ad' : '#8d8896';
     ctx.beginPath();
     ctx.moveTo(-13, 0); ctx.lineTo(-10, -66); ctx.lineTo(10, -66); ctx.lineTo(13, 0);
@@ -869,7 +890,7 @@ function drawStructureShape(key, level) {
     ctx.fillRect(9, -84, 8, 8);
     ctx.fillStyle = '#2a2438';
     ctx.fillRect(-3, -46, 6, 12);
-    // arqueiro no topo
+
     ctx.strokeStyle = '#241f2e';
     ctx.fillStyle = '#241f2e';
     ctx.lineWidth = 2.5;
@@ -878,7 +899,7 @@ function drawStructureShape(key, level) {
     ctx.beginPath(); ctx.arc(4, -84, 5, -Math.PI / 2, Math.PI / 2); ctx.stroke();
     ctx.restore();
     if (big) {
-      // bandeira no topo (fora da escala)
+
       ctx.strokeStyle = '#5a4032'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(0, -103); ctx.lineTo(0, -116); ctx.stroke();
       ctx.fillStyle = '#c4453f';
@@ -907,7 +928,6 @@ function drawVillager(v) {
   const building = v.st === 'build';
   const moving = !building;
 
-  // animação: balanço ao andar/martelar
   const hop = 0;
   const tilt = building ? Math.sin(v.swing) * 0.12
     : moving ? Math.sin(v.walk || 0) * 0.06 : 0;
@@ -923,7 +943,7 @@ function drawVillager(v) {
   if (aldeaoImg.complete && aldeaoImg.naturalWidth) {
     ctx.drawImage(aldeaoImg, -w / 2, -h, w, h);
   } else {
-    ctx.fillStyle = '#7a3b32'; // fallback enquanto a sprite carrega
+    ctx.fillStyle = '#7a3b32';
     ctx.fillRect(-w / 2, -h, w, h);
   }
   ctx.restore();
@@ -931,28 +951,58 @@ function drawVillager(v) {
 
 function drawEnemy(e) {
   const sx = e.x - camX;
-  if (sx < -30 || sx > W + 30) return;
+  if (sx < -60 || sx > W + 60) return;
   const y = terrainY(e.x);
   const bob = Math.sin(animT * 6 + e.bob) * 2;
-  ctx.fillStyle = '#3a2750';
-  ctx.beginPath(); ctx.arc(sx, y - 8 + bob, 8, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(sx - 6, y - 3 + bob, 4, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(sx + 6, y - 3 + bob, 4, 0, Math.PI * 2); ctx.fill();
+  const img = enemyImgs[Math.floor(animT * 8 + e.bob) % enemyImgs.length];
+  const dir = e.dir || (e.x < SPAWN_X ? 1 : -1);
+  const h = 46, w = img.naturalWidth ? h * (img.naturalWidth / img.naturalHeight) : h * 1.7;
+  const waterY = y + h * 0.05;   // linha d'água: ~metade do corpo submersa
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, waterY);     // só desenha acima da água
+  ctx.clip();
+  ctx.translate(sx, y + bob);
+  ctx.scale(dir, 1);
+  if (img.complete && img.naturalWidth) {
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  } else {
+    ctx.fillStyle = '#3a2750';
+    ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
 }
 
-// Barco: aparece sob o player quando ele está na água (veículo/locomotiva)
+function boatBob() {
+  return Math.sin(animT * 2) * 3 * boatIdle;
+}
+
+function drawBoatWake() {
+  const p = state.player;
+  if (onPlatform(p.x) || Math.abs(p.vx) < 12) return;
+  const img = wakeImgs[Math.floor(animT * 8) % 4];
+  if (!img.complete || !img.naturalWidth) return;
+  const sx = p.x - camX;
+  const w = 320, h = w * (img.naturalHeight / img.naturalWidth);
+  ctx.save();
+  ctx.translate(sx + p.dir * 100, p.y + boatBob() + 45);
+  ctx.scale(p.dir, 1);
+  ctx.globalAlpha = 0.7;
+  ctx.drawImage(img, -w, -h / 2, w, h);
+  ctx.restore();
+}
+
 function drawBoat() {
   const p = state.player;
-  if (onPlatform(p.x)) return; // só na água
+  if (onPlatform(p.x)) return;
   const sx = p.x - camX;
   const h = 60;
   const w = boatImg.naturalWidth ? h * (boatImg.naturalWidth / boatImg.naturalHeight) : h * 3;
   if (sx < -w || sx > W + w) return;
-  const bobY = Math.sin(animT * 2 + p.x * 0.01) * 3; // balanço nas ondas
   ctx.save();
-  ctx.translate(sx, p.y + bobY);
+  ctx.translate(sx, p.y + boatBob());
   ctx.scale(p.dir, 1);
-  // o player pisa no convés; o casco desce na água
+
   if (boatImg.complete && boatImg.naturalWidth > 0) {
     ctx.drawImage(boatImg, -w / 2, -h * 0.28, w, h);
   } else {
@@ -965,21 +1015,21 @@ function drawBoat() {
 function drawPlayer() {
   const p = state.player;
   let sx = p.x - camX;
-  const y = p.y;
+  let y = p.y;
   const noBoat = onPlatform(p.x);
-  const moving = noBoat && Math.abs(p.vx) > 12; // no barco fica parado (sem animação)
+  const moving = noBoat && Math.abs(p.vx) > 12;  
   const bob = moving ? Math.abs(Math.sin(animT * 10)) * 3 : 0;
-  const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0; // balanço lateral igual os aldeões
-
-  // na água: fica na traseira do barco (~30% a partir do fundo)
-  if (!noBoat) {
-    const bw = boatImg.naturalWidth ? 60 * (boatImg.naturalWidth / boatImg.naturalHeight) : 180;
-    sx -= p.dir * bw * 0.2;
-  }
+  const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0;
 
   const h = 66;
   const ratio = playerImg.naturalWidth ? playerImg.naturalWidth / playerImg.naturalHeight : 0.6;
   const w = h * ratio;
+
+  if (!noBoat) {              // colado no barco: mesmo balanço + descido 40%
+    const bw = boatImg.naturalWidth ? 60 * (boatImg.naturalWidth / boatImg.naturalHeight) : 180;
+    sx -= p.dir * bw * 0.2;
+    y = p.y + boatBob() + h * 0.4;
+  }
 
   ctx.save();
   ctx.translate(sx, y - bob);
@@ -988,7 +1038,7 @@ function drawPlayer() {
   if (playerImg.complete && playerImg.naturalWidth) {
     ctx.drawImage(playerImg, -w / 2, -h, w, h);
   } else {
-    ctx.fillStyle = '#7d2436'; // fallback enquanto a sprite carrega
+    ctx.fillStyle = '#7d2436';
     ctx.fillRect(-w / 2, -h, w, h);
   }
   ctx.restore();
@@ -1007,42 +1057,8 @@ function drawArrow(a) {
   ctx.restore();
 }
 
-// Luzes desenhadas por cima do escurecimento noturno
 function drawGlows(nf) {
-  // fogueira
-  const fx = SPAWN_X - camX;
-  const fy = terrainY(SPAWN_X);
-  if (fx > -250 && fx < W + 250) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(fx, fy - 14, 4, fx, fy - 14, 180);
-    g.addColorStop(0, `rgba(255,150,50,${0.10 + nf * 0.30})`);
-    g.addColorStop(1, 'rgba(255,150,50,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(fx - 180, fy - 194, 360, 360);
-    ctx.restore();
-    // chamas
-    for (let k = 0; k < 3; k++) {
-      const fh = 12 + Math.sin(animT * 11 + k * 2.1) * 4;
-      ctx.fillStyle = k === 1 ? '#ffd23e' : '#ff8c3a';
-      ctx.beginPath();
-      ctx.moveTo(fx - 6 + k * 5, fy - 5);
-      ctx.lineTo(fx - 3 + k * 5, fy - 5 - fh);
-      ctx.lineTo(fx + k * 5, fy - 5);
-      ctx.closePath(); ctx.fill();
-    }
-  }
-  // olhos dos monstros
-  for (const e of state.enemies) {
-    if (e.dead) continue;
-    const sx = e.x - camX;
-    if (sx < -30 || sx > W + 30) continue;
-    const y = terrainY(e.x) - 10 + Math.sin(animT * 6 + e.bob) * 2;
-    ctx.fillStyle = '#ff6a55';
-    ctx.fillRect(sx - 4, y, 2.5, 2.5);
-    ctx.fillRect(sx + 1.5, y, 2.5, 2.5);
-  }
-  // janelas das tendas à noite
+
   if (nf > 0.2) {
     for (const s of state.structures) {
       if (!s.built || s.key !== 'tenda') continue;
@@ -1058,7 +1074,6 @@ function drawGlows(nf) {
   }
 }
 
-// Fantasma de pré-visualização — segue o mouse pelo MUNDO inteiro
 function drawGhost() {
   const key = ORDER[state.build.sel];
   const t = TYPES[key];
@@ -1066,7 +1081,7 @@ function drawGhost() {
   const v = validatePlacement(wx, key);
   const sx = wx - camX;
   const y = terrainY(wx);
-  // linha-guia vertical
+
   ctx.strokeStyle = 'rgba(255,255,255,0.15)';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
@@ -1086,7 +1101,6 @@ function drawGhost() {
   ctx.fillText(v.ok ? `${t.nome} — ${t.custo} moedas (clique)` : v.reason, sx, y - t.h - 22);
 }
 
-// Estrutura sob o mouse (fora do modo construção), para gerenciar.
 function structUnderMouse() {
   if (state.build.active) return null;
   const wx = mouse.x + camX;
@@ -1099,7 +1113,6 @@ function structUnderMouse() {
   return null;
 }
 
-// Painel de gerenciamento: contorno + botões Melhorar / Demolir.
 function drawManage() {
   manageRects = [];
   hoveredStruct = structUnderMouse();
@@ -1108,12 +1121,10 @@ function drawManage() {
   const sx = s.x - camX;
   const top = terrainY(s.x) - structH(s);
 
-  // contorno de seleção
   ctx.strokeStyle = 'rgba(255,233,168,0.9)';
   ctx.lineWidth = 2;
   ctx.strokeRect(sx - s.t.w / 2 - 6, top - 14, s.t.w + 12, structH(s) + 20);
 
-  // painel
   const pw = 196, ph = 84;
   const px = clamp(sx - pw / 2, 8, W - pw - 8);
   const py = clamp(top - 16 - ph, 8, H - ph - 8);
@@ -1122,17 +1133,15 @@ function drawManage() {
   ctx.strokeStyle = '#e7b93c'; ctx.lineWidth = 1.5;
   ctx.strokeRect(px, py, pw, ph);
 
-  // título e vida
   ctx.textAlign = 'left';
   ctx.fillStyle = '#fff'; ctx.font = 'bold 14px system-ui';
   ctx.fillText(`${s.t.nome} · Nível ${s.level}`, px + 10, py + 20);
   ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '12px system-ui';
   ctx.fillText(`HP ${Math.max(0, Math.ceil(s.hp))}/${s.hpMax}${s.built ? '' : ' · em obra'}`, px + 10, py + 37);
 
-  // botões
   const bw = (pw - 30) / 2, bh = 26, by = py + ph - bh - 10;
   ctx.textAlign = 'center'; ctx.font = 'bold 12px system-ui';
-  // Melhorar
+
   const up = upgradeCost(s);
   const canUp = s.built && up != null && state.coins >= up;
   const bxU = px + 10;
@@ -1141,7 +1150,7 @@ function drawManage() {
   ctx.fillStyle = '#fff';
   ctx.fillText(up == null ? 'Nível máx' : `Melhorar ${up}●`, bxU + bw / 2, by + 17);
   if (s.built && up != null) manageRects.push({ x: bxU, y: by, w: bw, h: bh, action: () => tryUpgrade(s) });
-  // Demolir
+
   const refund = Math.round(s.invested * REFUND);
   const bxD = px + 20 + bw;
   ctx.fillStyle = 'rgba(150,70,60,0.92)';
@@ -1150,14 +1159,13 @@ function drawManage() {
   ctx.fillText(`Demolir +${refund}●`, bxD + bw / 2, by + 17);
   manageRects.push({ x: bxD, y: by, w: bw, h: bh, action: () => demolish(s) });
 
-  // dica de teclado
   ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '11px system-ui';
   ctx.fillText('U melhorar · X demolir', px + pw / 2, py + ph + 14);
 }
 
 function drawHUD(nf) {
   ctx.textAlign = 'left';
-  // moedas
+
   ctx.fillStyle = '#ffd23e';
   ctx.beginPath(); ctx.arc(28, 30, 11, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#b8901e';
@@ -1166,17 +1174,37 @@ function drawHUD(nf) {
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 20px system-ui';
   ctx.fillText(state.coins, 48, 37);
-  // população e dia
+
   ctx.font = '15px system-ui';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillText(`Aldeões: ${state.villagers.length}`, 16, 62);
   ctx.fillText(`Dia ${state.day} ${nf > 0.5 ? '🌙' : '☀️'}`, 16, 84);
-  // dica
+
   ctx.textAlign = 'right';
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
   ctx.fillText(state.build.active ? 'Esc — sair do modo construção' : 'B — construir · H — ajuda', W - 16, 30);
 
-  // hotbar de construção
+  uiRects = [];
+  const btns = [
+    { label: nf > 0.5 ? 'Dia' : 'Noite', action: toggleDayNight },
+    { label: state.timeFrozen ? '▶ Tempo' : '⏸ Tempo', action: () => state.timeFrozen = !state.timeFrozen },
+  ];
+  const bw = 110, bh = 30, gap = 8;
+  for (let i = 0; i < btns.length; i++) {
+    const x = W - 16 - (btns.length - i) * (bw + gap) + gap, y = 46;
+    uiRects.push({ x, y, w: bw, h: bh, action: btns[i].action });
+    ctx.fillStyle = 'rgba(12,12,28,0.8)';
+    ctx.fillRect(x, y, bw, bh);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(btns[i].label, x + bw / 2, y + 20);
+  }
+  ctx.textAlign = 'left';
+
   hotbarRects = [];
   if (state.build.active) {
     const sw = 124, sh = 66, gap = 8;
@@ -1192,14 +1220,14 @@ function drawHUD(nf) {
       ctx.strokeStyle = i === state.build.sel ? '#e7b93c' : 'rgba(255,255,255,0.25)';
       ctx.lineWidth = i === state.build.sel ? 3 : 1.5;
       ctx.strokeRect(x, y0, sw, sh);
-      // mini-ícone
+
       ctx.save();
       ctx.translate(x + 30, y0 + sh - 12);
       const sc = Math.min(0.55, 42 / t.h);
       ctx.scale(sc, sc);
       drawStructureShape(key, 1);
       ctx.restore();
-      // nome e custo
+
       ctx.textAlign = 'left';
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 13px system-ui';
@@ -1210,7 +1238,6 @@ function drawHUD(nf) {
     }
   }
 
-  // mensagem
   if (state.msg.t > 0) {
     ctx.textAlign = 'center';
     ctx.font = 'bold 17px system-ui';
@@ -1229,7 +1256,7 @@ function drawHelp() {
     '',
     'A/D ou ←/→ — cavalgar      Shift — galopar',
     'B — modo construção      1-4 ou roda do mouse — escolher',
-    'Clique — posicionar EM QUALQUER LUGAR      Esc — cancelar',
+    '      Esc — cancelar',
     '',
     'Fazendas geram moedas de dia · Tendas atraem aldeões',
     'Aldeões constroem as obras · Torres atiram nos monstros',
@@ -1255,7 +1282,6 @@ function drawHelp() {
   }
 }
 
-// ---------- Loop principal ----------
 let lastTs = 0;
 function frame(ts) {
   const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0.016);
