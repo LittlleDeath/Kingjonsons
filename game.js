@@ -12,41 +12,56 @@ const SPAWN_X = WORLD_W / 2;
 const DAY_LEN = 70;            // s de dia
 const CYCLE = 105;            // ciclo dia+noite
 
-function terrainY(x) {        // superfície da água (calma, sem movimento)
-  return H * 0.85;
+const WATER_FRAC = 0.72;      // fração da tela onde fica a linha d'água
+function terrainY(x) {        // superfície da água (sem movimento)
+  return H * WATER_FRAC;
 }
-const waterLevel = () => H * 0.85;
+const waterLevel = () => H * WATER_FRAC;
 
 const DECK_INSET = 22;        // ajuste do deck sobre a sprite
 const floorY = () => waterLevel() - PLAT_VIS + DECK_INSET;
-const onPlatform = (x) => Math.abs(x - SPAWN_X) <= PLAT_W;
+const onPlatform = (x) => x >= PLAT_L && x <= PLAT_R;
 const groundY = (x) => onPlatform(x) ? floorY() : waterLevel();   // deck ou água
 
 const TYPES = {
-  muralha: { nome: 'Muralha', custo: 4,  w: 26, h: 58, tempo: 4, hp: 80 },
-  tenda:   { nome: 'Tenda',   custo: 6,  w: 48, h: 44, tempo: 5, hp: 40 },
-  fazenda: { nome: 'Fazenda', custo: 8,  w: 80, h: 40, tempo: 6, hp: 40 },
-  torre:   { nome: 'Torre',   custo: 12, w: 34, h: 86, tempo: 8, hp: 60 },
+  muralha:  { nome: 'Muralha',  custo: 1,  w: 42,  h: 93,  tempo: 4, hp: 80 },
+  tenda:    { nome: 'Tenda',    custo: 1,  w: 77,  h: 70,  tempo: 5, hp: 40 },
+  fazenda:  { nome: 'Fazenda',  custo: 1,  w: 128, h: 64,  tempo: 6, hp: 40 },
+  torre:    { nome: 'Torre',    custo: 1,  w: 54,  h: 138, tempo: 8, hp: 60 },
+  ferreiro: { nome: 'Ferreiro', custo: 1,  w: 112, h: 118, tempo: 7, hp: 60, platformOnly: true },
+  plataforma: { nome: 'Plataforma', custo: 1, w: 80, h: 110, tempo: 6, hp: 100, special: 'platform' },
+  tocha:    { nome: 'Tocha',    custo: 0,  w: 24, h: 80, tempo: 3, hp: 30 },
 };
-const ORDER = ['muralha', 'tenda', 'fazenda', 'torre'];
+const ORDER = ['muralha', 'tenda', 'fazenda', 'torre', 'ferreiro', 'plataforma'];
 
 // níveis por tipo; índice 0 = base, custoUp = preço pra subir
 const LEVELS = {
   muralha: [
     { hp: 80 },
-    { custoUp: 6,  hp: 180, h: 76 },
+    { custoUp: 1,  hp: 180, h: 122 },
   ],
   tenda:   [{ hp: 40 }],
   fazenda: [{ hp: 40 }],
   torre:   [
     { hp: 60,  range: 300, fireRate: 1.4 },
-    { custoUp: 10, hp: 120, h: 104, range: 410, fireRate: 0.9 },
+    { custoUp: 1, hp: 120, h: 166, range: 410, fireRate: 0.9 },
   ],
+  ferreiro: [{ hp: 60 }],
+  plataforma: [{ hp: 100 }],
+  tocha: [{ hp: 30 }],
 };
 const REFUND = 0.7;           // reembolso ao demolir
 
+const STRUCT_SCALE = 1.6;   // construções (exceto plataforma) maiores
+function drawScaledShape(key, level) {
+  ctx.save();
+  ctx.scale(STRUCT_SCALE, STRUCT_SCALE);
+  drawStructureShape(key, level);
+  ctx.restore();
+}
 function maxLevel(key) { return LEVELS[key].length; }
 function structH(s) { return s.dispH || s.t.h; }
+function structGroundY(s) { return s.onDeck ? floorY() : terrainY(s.x); }
 
 function applyLevel(s) {
   const d = LEVELS[s.key][s.level - 1];
@@ -67,7 +82,8 @@ const state = {
   time: 0,
   paused: false,
   timeFrozen: false,
-  player: { x: SPAWN_X + 60, y: 0, vx: 0, vy: 0, dir: 1 },
+  player: { x: SPAWN_X + 60, y: 0, vx: 0, vy: 0, dir: 1, boatSkin: 'default', drawY: null, dvy: 0, onBoat: false },
+  boatMenu: false,
   structures: [],
   villagers: [],
   enemies: [],
@@ -90,7 +106,19 @@ const platforms = [
 ];
 
 const house = { x: SPAWN_X };
+const boat = { x: SPAWN_X + PLAT_W * 0.9, dir: 1 };   // barco flutua na água
+const boatWidth = () => 60 * (boatImg.naturalWidth ? boatImg.naturalWidth / boatImg.naturalHeight : 3);
+let PLAT_L = SPAWN_X - PLAT_W, PLAT_R = SPAWN_X + PLAT_W;   // deck JÁ construído
+let planL = PLAT_L, planR = PLAT_R;                          // inclui obras em andamento
+let rightCount = 0, leftCount = 0;       // plataformas concluídas por lado (gatilho da tocha)
+let rightPlanned = 0, leftPlanned = 0;   // plataformas encomendadas por lado (alterna sprite)
+// próxima sprite: direita = 1,2,1,2... · esquerda = 2,1,2,1...
+const nextPlatImg = (side) => side > 0
+  ? (rightPlanned % 2 === 0 ? 'plat1' : 'plat2')
+  : (leftPlanned % 2 === 0 ? 'plat2' : 'plat1');
+const torches = [SPAWN_X - PLAT_W * 0.85, SPAWN_X + PLAT_W * 0.85];   // tochas construídas
 
+state.player.mode = 'platform';   // 'platform' (deck) ou 'boat' (na água)
 state.player.y = floorY();
 
 const aldeaoImg = new Image();
@@ -103,22 +131,56 @@ const plat2Img = new Image();
 plat2Img.src = 'plataforma2.png';
 const houseImg = new Image();
 houseImg.src = 'casa-de-barco.png';
+const ferreiroImg = new Image();
+ferreiroImg.src = 'casa-ferreiro.png';
 const boatImg = new Image();
 boatImg.src = 'barco.png';
-const wakeImgs = [1, 2, 3, 4].map(n => { const i = new Image(); i.src = `barco-anim/${n}.png`; return i; });
+const wakeImgs = [1, 2, 3, 4].map(n => { const i = new Image(); i.src = `water-anim/${n}.png`; return i; });
 const enemyImgs = [1, 2, 3, 4, 5, 6, 7].map(n => { const i = new Image(); i.src = `enemy-anim/IMG_2437_${n}.png`; return i; });
+const bgImg = new Image();
+bgImg.src = 'background.png';
 const torchImg = new Image();
 torchImg.src = 'firetorch/torch.png';
 const fireImg = new Image();
 fireImg.src = 'firetorch/fire.png';
+const nitroSnd = new Audio('nitro.mp3');
+nitroSnd.loop = true;
 let camX = 0;
 let animT = 0;
+let cloudX = SPAWN_X;   // posição da nuvem no mapa (vento p/ direita)
 let boatIdle = 0;     // 0 = movendo, 1 = parado (suavizado)
+let wakeFade = 0;     // opacidade do rastro: sobe/desce em 3s
 let spawnTimer = 3;
 let hotbarRects = [];
 let manageRects = [];
 let uiRects = [];
 let hoveredStruct = null;
+let wPrev = false;   // estado anterior do W (pra disparar por toque, não por segurar)
+let nearBoatHouse = false;   // player dentro do sprite da casa de barco
+let boatBtnRect = null;      // botão "E" na tela
+let boatCardRects = [];      // cartas de seleção de barco
+let ghostBoatCanvas = null;  // sprite do barco tingido de verde (lazy)
+
+const houseWidth = () => (houseImg.naturalWidth ? 130 * (houseImg.naturalWidth / houseImg.naturalHeight) : 130);
+
+// barco verde-fantasma: tinge só os pixels do sprite (source-atop no próprio canvas)
+function getGhostBoat() {
+  if (ghostBoatCanvas) return ghostBoatCanvas;
+  if (!boatImg.complete || !boatImg.naturalWidth) return null;
+  const oc = document.createElement('canvas');
+  oc.width = boatImg.naturalWidth;
+  oc.height = boatImg.naturalHeight;
+  const o = oc.getContext('2d');
+  o.drawImage(boatImg, 0, 0);
+  o.globalCompositeOperation = 'source-atop';
+  o.fillStyle = 'rgba(30,220,70,0.7)';   // verde forte
+  o.fillRect(0, 0, oc.width, oc.height);
+  ghostBoatCanvas = oc;
+  return oc;
+}
+function boatSprite() {
+  return state.player.boatSkin === 'ghost' ? (getGhostBoat() || boatImg) : boatImg;
+}
 
 state.villagers.push(newVillager(SPAWN_X - 40, null));
 state.villagers.push(newVillager(SPAWN_X + 30, null));
@@ -157,7 +219,7 @@ function toggleDayNight() {
 }
 
 function newVillager(x, home) {
-  return { x, dir: 1, st: 'idle', tgt: null, goal: x, wt: 0, home, swing: 0, walk: 0 };
+  return { x, dir: 1, st: 'idle', tgt: null, goal: x, wt: 0, home, swing: 0, walk: 0, drawY: null, dvy: 0 };
 }
 
 const keys = {};
@@ -166,21 +228,39 @@ const mouse = { x: 0, y: 0 };
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   const k = e.key.toLowerCase();
-  if (k === 'b') showMsg('desabilitado pra fudidos nao jogarem, vai terminar os desenhos');
-  if (k === 'escape') state.build.active = false;
+  if (k === 'b') state.build.active = !state.build.active;
+  if (k === 'escape') { state.build.active = false; state.boatMenu = false; }
   if (k === 'h') state.helpOn = !state.helpOn;
   if (k === 'p') state.paused = !state.paused;
+  if (k === 'e') { if (nearBoatHouse || state.boatMenu) state.boatMenu = !state.boatMenu; }
 
   if (k === 'u' && !state.build.active && hoveredStruct) tryUpgrade(hoveredStruct);
   if (k === 'x' && !state.build.active && hoveredStruct) demolish(hoveredStruct);
-  // const d = ORDER.findIndex((_, i) => k === String(i + 1));
-  // if (d >= 0) { state.build.sel = d; if (!state.build.active) state.build.active = true; }
+  const d = ORDER.findIndex((_, i) => k === String(i + 1));
+  if (d >= 0) { state.build.sel = d; state.build.active = true; }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
 canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
+  if (state.boatMenu) {   // menu de seleção de barco intercepta o clique
+    for (const r of boatCardRects) {
+      if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+        state.player.boatSkin = r.skin;
+        state.boatMenu = false;
+        showMsg(r.skin === 'ghost' ? 'Barco fantasma selecionado!' : 'Barco padrão selecionado!');
+        return;
+      }
+    }
+    state.boatMenu = false;   // clicar fora fecha
+    return;
+  }
+  if (boatBtnRect && mouse.x >= boatBtnRect.x && mouse.x <= boatBtnRect.x + boatBtnRect.w &&
+      mouse.y >= boatBtnRect.y && mouse.y <= boatBtnRect.y + boatBtnRect.h) {
+    state.boatMenu = true;
+    return;
+  }
   for (const r of uiRects) {
     if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
       r.action();
@@ -213,38 +293,94 @@ canvas.addEventListener('wheel', e => {
   state.build.sel = (state.build.sel + (e.deltaY > 0 ? 1 : ORDER.length - 1)) % ORDER.length;
 });
 
+function platformCost() { return 1; }
+
+// encomenda uma plataforma; os aldeões é que constroem (orderPlatform → finishPlatform)
+function orderPlatform(side) {
+  const cost = platformCost();
+  if (state.coins < cost) { showMsg('Moedas insuficientes'); return; }
+  if (side > 0 && planR + PLAT_W > WORLD_W - 40) { showMsg('Fora do mundo'); return; }
+  if (side < 0 && planL - PLAT_W < 40) { showMsg('Fora do mundo'); return; }
+  state.coins -= cost;
+  const img = nextPlatImg(side);
+  let tileL, tileR, center;
+  if (side < 0) { tileR = planL; tileL = planL - PLAT_W; planL = tileL; leftPlanned++; }
+  else { tileL = planR; tileR = planR + PLAT_W; planR = tileR; rightPlanned++; }
+  center = (tileL + tileR) / 2;
+  const t = TYPES.plataforma;
+  state.structures.push({
+    key: 'plataforma', t, x: center, level: 1, invested: cost, onDeck: false,
+    side, tileL, tileR, img,
+    hp: t.hp, hpMax: t.hp, dispH: t.h, range: 0, fireRate: 0,
+    progress: 0, built: false, workers: 0, ct: 0, cd: 0, dead: false,
+  });
+  showMsg('Iniciando plataforma!');
+}
+
+function finishPlatform(s) {
+  if (s.side < 0) { platforms.unshift({ x: s.x, img: s.img }); PLAT_L = s.tileL; leftCount++; }
+  else { platforms.push({ x: s.x, img: s.img }); PLAT_R = s.tileR; rightCount++; }
+  s.dead = true;
+  for (let i = 0; i < 16; i++) spawnParticle(s.x, floorY(), '#c9b08a');
+  showMsg('Plataforma construída!');
+  // a cada 2 plataformas concluídas naquele lado, encomenda uma tocha perto do fim
+  const cnt = s.side < 0 ? leftCount : rightCount;
+  if (cnt % 2 === 0) orderTorch(s.side < 0 ? s.tileL + 30 : s.tileR - 30);
+}
+
+function orderTorch(x) {
+  const t = TYPES.tocha;
+  state.structures.push({
+    key: 'tocha', t, x, level: 1, invested: 0, onDeck: true,
+    hp: t.hp, hpMax: t.hp, dispH: t.h, range: 0, fireRate: 0,
+    progress: 0, built: false, workers: 0, ct: 0, cd: 0, dead: false,
+  });
+  showMsg('Tocha encomendada!');
+}
+
 function validatePlacement(wx, key) {
   const t = TYPES[key];
   if (state.coins < t.custo) return { ok: false, reason: 'Moedas insuficientes' };
-  if (wx - t.w / 2 < 40 || wx + t.w / 2 > WORLD_W - 40) return { ok: false, reason: 'Fora do mundo' };
-  const yl = terrainY(wx - t.w / 2), yr = terrainY(wx + t.w / 2), ym = terrainY(wx);
-  if (Math.max(yl, yr, ym) - Math.min(yl, yr, ym) > 16) return { ok: false, reason: 'Terreno muito íngreme' };
+  if (wx - t.w / 2 < PLAT_L || wx + t.w / 2 > PLAT_R) return { ok: false, reason: 'Só na plataforma' };
   for (const s of state.structures) {
     if (Math.abs(s.x - wx) < (s.t.w + t.w) / 2 + 8) return { ok: false, reason: 'Muito perto de outra estrutura' };
   }
-  if (Math.abs(wx - SPAWN_X) < 60) return { ok: false, reason: 'Muito perto da fogueira' };
+  const houseW = houseImg.naturalWidth ? 130 * (houseImg.naturalWidth / houseImg.naturalHeight) : 130;
+  if (Math.abs(wx - house.x) < houseW / 2 + t.w / 2 + 12) return { ok: false, reason: 'Muito perto da casa de barco' };
   return { ok: true };
 }
 
 function tryPlace() {
   const key = ORDER[state.build.sel];
   const wx = mouse.x + camX;
+  if (TYPES[key].special === 'platform') {   // encomenda deck: lado pela posição do mouse
+    orderPlatform(wx < SPAWN_X ? -1 : 1);
+    return;
+  }
   const v = validatePlacement(wx, key);
   if (!v.ok) { showMsg(v.reason); return; }
   const t = TYPES[key];
   state.coins -= t.custo;
   const s = {
-    key, t, x: wx, level: 1, invested: t.custo,
+    key, t, x: wx, level: 1, invested: t.custo, onDeck: onPlatform(wx),
     hp: t.hp, hpMax: t.hp, dispH: t.h, range: 0, fireRate: 0,
     progress: 0, built: false, workers: 0, ct: 0, cd: 0, dead: false,
   };
   applyLevel(s);
   state.structures.push(s);
   for (let i = 0; i < 10; i++) spawnParticle(wx, terrainY(wx) - 6, '#c9b08a');
-  showMsg(`${t.nome} encomendada — aldeões a caminho!`);
+  showMsg(`Iniciando a construção de ${t.nome}!`);
 }
 
 function completeStructure(s) {
+  if (s.key === 'plataforma') { finishPlatform(s); return; }
+  if (s.key === 'tocha') {
+    torches.push(s.x);
+    s.dead = true;
+    for (let i = 0; i < 12; i++) spawnParticle(s.x, floorY() - 40, '#ffb432');
+    showMsg('Tocha finalizada!');
+    return;
+  }
   s.built = true;
   for (let i = 0; i < 14; i++) spawnParticle(s.x, terrainY(s.x) - s.t.h / 2, '#ffe9a8');
   if (s.key === 'tenda') {
@@ -287,6 +423,9 @@ function demolish(s) {
 
 function update(dt) {
   animT += dt;
+  cloudX = (cloudX + 20 * dt) % WORLD_W;    // vento p/ direita, dá a volta no mapa
+  const wakeMoving = state.player.mode === 'boat' && state.player.seated && Math.abs(state.player.vx) > 12;
+  wakeFade = clamp(wakeFade + (wakeMoving ? 1 : -1) * dt / 0.7, 0, 1);   // dt / 3 = 3 seg
   const idleTarget = Math.abs(state.player.vx) > 12 ? 0 : 1;
   boatIdle = lerp(boatIdle, idleTarget, 1 - Math.pow(0.001, dt));
   if (!state.timeFrozen) {
@@ -313,24 +452,90 @@ function update(dt) {
   state.pickups = state.pickups.filter(p => !p.dead);
   state.particles = state.particles.filter(p => p.life > 0);
 
-  camX = clamp(state.player.x - W / 2, 0, Math.max(0, WORLD_W - W));
+  const camTarget = clamp(state.player.x - W / 2, 0, Math.max(0, WORLD_W - W));
+  camX = lerp(camX, camTarget, 1 - Math.pow(0.0008, dt));   // segue o alvo suavemente
 }
 
 function updatePlayer(dt) {
   const p = state.player;
   const fast = keys['shift'];
-  const speed = fast ? 290 : 175;
+  // nitro: só montado no barco fantasma com shift — corre muito rápido + som
+  const nitro = p.mode === 'boat' && p.onBoat && p.boatSkin === 'ghost' && fast;
+  if (nitro) {
+    if (nitroSnd.paused) nitroSnd.play().catch(() => {});
+  } else if (!nitroSnd.paused) {
+    nitroSnd.pause();
+    nitroSnd.currentTime = 0;
+  }
+  let speed = fast ? 290 : 175;            // corrida em terra / padrão do barco
+  if (nitro) speed = 820;
+  else if (p.mode === 'boat' && !p.onBoat) speed *= 0.7;   // só nadando = 70%
+  // subindo pro deck: quase parado na horizontal (parece que está escalando)
+  const climbing = p.mode === 'platform' && p.drawY != null && p.drawY > floorY() + 8;
+  if (climbing) speed *= 0.1;
   let mv = 0;
   if (keys['a'] || keys['arrowleft']) mv -= 1;
   if (keys['d'] || keys['arrowright']) mv += 1;
+  // caindo dentro do barco: trava A/D até estar 100% sentado
+  if (p.mode === 'boat' && p.onBoat && !p.seated) { mv = 0; p.vx = 0; }
   p.vx = lerp(p.vx, mv * speed, 1 - Math.pow(0.0015, dt));
-  p.x = clamp(p.x + p.vx * dt, 30, WORLD_W - 30);
-  if (mv !== 0) p.dir = mv;
 
-  p.vy += 1400 * dt;           // gravidade: pousa no deck ou na água
-  p.y += p.vy * dt;
-  const gy = groundY(p.x);
-  if (p.y >= gy) { p.y = gy; p.vy = 0; }
+  if (p.mode === 'boat') {
+    // só vira quando desacelerar o bastante (precisa frear pra virar)
+    if (mv !== 0 && Math.abs(p.vx) < 25) p.dir = mv;
+    p.x = clamp(p.x + p.vx * dt, 30, WORLD_W - 30);
+    p.y = waterLevel();
+    // o barco só se move quando o player está 100% dentro dele (terminou de descer)
+    if (p.onBoat && p.seated) {
+      boat.x = p.x;            // barco anda com o player
+      boat.dir = p.dir;
+    }
+    const wEdge = keys['w'] && !wPrev;   // só no momento que aperta
+    if (wEdge) {
+      if (!p.onBoat && Math.abs(boat.x - p.x) < boatWidth() * 0.5) {
+        p.onBoat = true; p.x = boat.x; p.vx = 0; p.dir = boat.dir;   // perto do barco → embarca (prioridade)
+      } else if (p.x >= PLAT_L && p.x <= PLAT_R) {
+        p.mode = 'platform'; p.vy = 0; p.onBoat = false;             // alinhado ao deck → sobe
+        p.x = clamp(p.x, PLAT_L, PLAT_R);
+      }
+    }
+  } else {
+    if (mv !== 0) p.dir = mv;                        // no deck vira na hora
+    const nx = p.x + p.vx * dt;
+    if (nx < PLAT_L || nx > PLAT_R) {                 // chegou no fim da plataforma → cai na água
+      p.mode = 'boat';
+      p.x = clamp(nx, 30, WORLD_W - 30);
+      p.onBoat = false;   // cai sempre nadando; entra no barco só com W perto dele
+      p.vy = 0;
+    } else {
+      p.x = nx;
+      p.vy += 1400 * dt;
+      p.y += p.vy * dt;
+      const gy = floorY();
+      if (p.y >= gy) { p.y = gy; p.vy = 0; }
+      // desce no barco com S, se alinhado (alcance = 70% da largura da sprite)
+      if (keys['s'] && Math.abs(p.x - boat.x) < boatWidth() * 0.35) {
+        p.mode = 'boat'; p.onBoat = true; p.x = boat.x; p.vx = 0; p.dir = boat.dir;
+      }
+    }
+  }
+
+  // transição vertical animada: cai na água (gravidade) / sobe no deck (animação)
+  const PH = 66;
+  const target = p.mode !== 'boat' ? floorY()
+    : (p.onBoat ? waterLevel() + boatBob() + PH * 0.4 : waterLevel() + PH * 0.5);
+  if (p.drawY == null) { p.drawY = target; p.dvy = 0; }
+  else {
+    const diff = target - p.drawY;
+    if (Math.abs(diff) <= 8) { p.drawY = target; p.dvy = 0; }        // perto: acompanha (ex.: balanço do barco)
+    else if (diff > 0) { p.dvy += 1100 * dt; p.drawY = Math.min(target, p.drawY + p.dvy * dt); }  // caindo
+    else { p.dvy = 0; p.drawY = Math.max(target, p.drawY - 130 * dt); }                            // subindo
+  }
+
+  // 100% dentro do barco? (terminou de descer até a posição de assento)
+  p.seated = p.onBoat && p.drawY != null && Math.abs(p.drawY - (waterLevel() + boatBob() + PH * 0.4)) <= 8;
+
+  wPrev = keys['w'];
 }
 
 function updateStructures(dt) {
@@ -380,9 +585,27 @@ function releaseTarget(v) {
   if (v.tgt) { v.tgt.workers = Math.max(0, v.tgt.workers - 1); v.tgt = null; }
 }
 
+const VILL_H = 54;
+// transição vertical suave entre deck e água (cai com gravidade, sobe com animação)
+function animVillagerY(v, dt) {
+  const target = onPlatform(v.x) ? floorY() : waterLevel() + VILL_H * 0.5;
+  if (v.drawY == null) { v.drawY = target; v.dvy = 0; return; }
+  if (target > v.drawY + 0.5) {            // caindo na água
+    v.dvy = (v.dvy || 0) + 1100 * dt;
+    v.drawY = Math.min(target, v.drawY + v.dvy * dt);
+    if (v.drawY >= target) v.dvy = 0;
+  } else if (target < v.drawY - 0.5) {     // subindo de volta pro deck
+    v.dvy = 0;
+    v.drawY = Math.max(target, v.drawY - 130 * dt);
+  } else {
+    v.drawY = target; v.dvy = 0;
+  }
+}
+
 function updateVillagers(dt) {
   const night = nightFactor() > 0.6;
   for (const v of state.villagers) {
+    animVillagerY(v, dt);
     v.st = 'idle';
     if (night) {
 
@@ -452,7 +675,7 @@ function updateEnemies(dt) {
 
     let blocker = null;
     for (const s of state.structures) {
-      if (s.dead) continue;
+      if (s.dead || s.key === 'plataforma' || s.key === 'tocha') continue;
       if (Math.abs(s.x - e.x) < s.t.w / 2 + 12) { blocker = s; break; }
     }
     if (blocker) {
@@ -550,11 +773,15 @@ function updateParticles(dt) {
 function draw() {
   const nf = nightFactor();
   drawSky(nf);
-  drawRidge(0.15, H * 0.52, 70, 0.0016, 30, 0.005, lerpC([96, 116, 150], [16, 20, 50], nf));
-  drawRidge(0.35, H * 0.62, 50, 0.0023, 22, 0.007, lerpC([70, 92, 122], [12, 15, 42], nf));
-  drawGround(nf);
+  // cena estática que reflete na água
   drawCampfireBase();
   for (const s of state.structures) drawStructure(s);
+  drawPlatforms();
+  drawTorches();
+  drawReflection();            // espelha céu + casa + plataforma + tocha
+  drawGround(nf);              // água cristalina por cima do reflexo
+  drawPlatforms();             // pilares por cima da água
+  // atores dinâmicos (não refletem)
   for (const c of state.pickups) drawCoin(c);
   for (const v of state.villagers) drawVillager(v);
   for (const e of state.enemies) drawEnemy(e);
@@ -562,8 +789,6 @@ function draw() {
   drawBoat();   // barco na frente do player
   drawBoatWake();   // rastro por cima do barco
   for (const a of state.arrows) drawArrow(a);
-  drawPlatforms();             // por cima de tudo
-  drawTorches();
   for (const p of state.particles) {
     ctx.globalAlpha = clamp(p.life * 2, 0, 1);
     ctx.fillStyle = p.color;
@@ -581,6 +806,7 @@ function draw() {
   else if (!state.helpOn && !state.paused) drawManage();
   else { manageRects = []; hoveredStruct = null; }
   drawHUD(nf);
+  drawBoatPrompt();
   if (state.helpOn) drawHelp();
   if (state.paused) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -590,17 +816,108 @@ function draw() {
     ctx.textAlign = 'center';
     ctx.fillText('PAUSADO', W / 2, H / 2);
   }
+  if (state.boatMenu) drawBoatMenu();
+}
+
+function drawBoatPrompt() {
+  const p = state.player;
+  nearBoatHouse = p.mode === 'platform' && Math.abs(p.x - house.x) < houseWidth() / 2;
+  boatBtnRect = null;
+  if (!nearBoatHouse || state.boatMenu || state.build.active || state.helpOn || state.paused) return;
+
+  const sx = p.x - camX;
+  const cy = p.y - 84;       // acima da cabeça do player
+  const s = 26;
+  const x = sx - s / 2, y = cy - s / 2;
+  boatBtnRect = { x, y, w: s, h: s };
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(12,12,28,0.9)';
+  ctx.strokeStyle = '#e7b93c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, s, s, 6); else ctx.rect(x, y, s, s);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('E', sx, cy + 1);
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = '12px system-ui';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('', sx, y - 6);
+  ctx.restore();
+}
+
+function drawBoatMenu() {
+  boatCardRects = [];
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffe9a8';
+  ctx.font = 'bold 24px system-ui';
+  ctx.fillText('Escolha seu barco', W / 2, H / 2 - 130);
+
+  const cw = 200, ch = 200, gap = 40;
+  const total = cw * 2 + gap;
+  const x0 = (W - total) / 2, y0 = H / 2 - ch / 2;
+  const opts = [
+    { skin: 'default', nome: 'Padrão', spr: boatImg },
+    { skin: 'ghost', nome: 'Fantasma Verde', spr: getGhostBoat() || boatImg },
+  ];
+  for (let i = 0; i < opts.length; i++) {
+    const o = opts[i];
+    const x = x0 + i * (cw + gap);
+    const sel = state.player.boatSkin === o.skin;
+    boatCardRects.push({ x, y: y0, w: cw, h: ch, skin: o.skin });
+
+    ctx.fillStyle = 'rgba(14,16,34,0.95)';
+    ctx.fillRect(x, y0, cw, ch);
+    ctx.strokeStyle = sel ? '#7ec74f' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = sel ? 4 : 2;
+    ctx.strokeRect(x, y0, cw, ch);
+
+    if (boatImg.complete && boatImg.naturalWidth) {
+      const ratio = boatImg.naturalWidth / boatImg.naturalHeight;
+      const bw = cw * 0.74, bh = bw / ratio;
+      if (o.skin === 'ghost') ctx.globalAlpha = 0.85;
+      ctx.drawImage(o.spr, x + (cw - bw) / 2, y0 + ch / 2 - bh / 2 - 10, bw, bh);
+      ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px system-ui';
+    ctx.fillText(o.nome, x + cw / 2, y0 + ch - 18);
+    if (sel) {
+      ctx.fillStyle = '#7ec74f';
+      ctx.font = '12px system-ui';
+      ctx.fillText('● selecionado', x + cw / 2, y0 + 22);
+    }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '13px system-ui';
+  ctx.fillText('Esc / E para fechar', W / 2, y0 + ch + 36);
 }
 
 function drawSky(nf) {
 
-  const top = nf < 0.5 ? '#4a7a9a' : '#0a1a2a';
-  const bot = nf < 0.5 ? '#2a5a7a' : '#050a15';
+  const top = nf < 0.5 ? '#7a6ee6' : '#0a0a2a';
+  const bot = nf < 0.5 ? '#a99fe0' : '#08081a';
   const g = ctx.createLinearGradient(0, 0, 0, H * 0.8);
   g.addColorStop(0, top);
   g.addColorStop(1, bot);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+
+  const bgDrop = 0;   // ajuste vertical da nuvem
+  if (bgImg.complete && bgImg.naturalWidth) {
+    const cw = W, bh = waterLevel(), base = cloudX - camX;
+    for (let off = -WORLD_W; off <= WORLD_W; off += WORLD_W) {   // wrap no mapa
+      const x = base + off;
+      if (x + cw > 0 && x < W) ctx.drawImage(bgImg, x, bgDrop, cw, bh);
+    }
+  }
 
   if (nf > 0.05) {
     for (let i = 0; i < 90; i++) {
@@ -635,24 +952,26 @@ function drawSky(nf) {
 }
 function drawSkyMoonShadow(nf) { return lerpC([6, 8, 32], [6, 8, 32], nf); }
 
-function drawRidge(par, base, amp1, f1, amp2, f2, color) {
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(0, H);
-  for (let sx = 0; sx <= W + 12; sx += 12) {
-    const wx = sx + camX * par;
-    ctx.lineTo(sx, base + Math.sin(wx * f1) * amp1 + Math.sin(wx * f2 + 3) * amp2);
+function drawReflection() {     // espelho da cena abaixo da linha d'água, ondulado em faixas
+  const wl = waterLevel();
+  ctx.save();
+  ctx.globalAlpha = 0.65;
+  for (let Y = wl; Y < H; Y++) {             // faixas de 1px → ondulação suave (sem serrilhar)
+    const srcY = 2 * wl - Y;                 // linha de origem (acima da água)
+    if (srcY <= 0) break;
+    const depth = Y - wl;                    // distância abaixo da superfície
+    const amp = Math.min(5, depth * 0.03);   // distorção cresce com a profundidade (nuvem ondula mais)
+    const dx = Math.sin(animT * 0.45 + Y * 0.035) * amp;   // bem devagar
+    ctx.drawImage(canvas, 0, srcY - 1, W, 1, dx, Y, W, 1);
   }
-  ctx.lineTo(W, H);
-  ctx.closePath();
-  ctx.fill();
+  ctx.restore();
 }
 
 function drawGround(nf) {
 
   const g = ctx.createLinearGradient(0, H * 0.85, 0, H);
-  g.addColorStop(0, 'rgba(168, 152, 186, 0.78)');   // lilás na superfície
-  g.addColorStop(1, 'rgba(196, 168, 178, 0.82)');   // rosado no fundo
+  g.addColorStop(0, 'rgba(170, 158, 200, 0.34)');   // água cristalina
+  g.addColorStop(1, 'rgba(196, 174, 196, 0.40)');
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(0, H);
@@ -692,12 +1011,12 @@ function drawTrees(nf) {
   }
 }
 
-function drawPlatforms() {     // deck na linha d'água, casco afunda
+function drawPlatforms() {    
   const wl = waterLevel();
   for (const p of platforms) {
     const sx = p.x - camX;
     const img = p.img === 'plat1' ? plat1Img : plat2Img;
-    const w = PLAT_W + 1;      // +1 fecha a fresta entre as duas
+    const w = PLAT_W + 1;     
     if (sx < -w || sx > W + w) continue;
     ctx.save();
     ctx.translate(sx, wl);
@@ -718,7 +1037,7 @@ function drawTorches() {
   const torchDrop = 5;       
   const fireDrop = 20;       
   const baseY = floorY() + torchDrop;
-  for (const tx of [SPAWN_X - PLAT_W * 0.85, SPAWN_X + PLAT_W * 0.85]) {
+  for (const tx of torches) {   // tochas concluídas (1 a cada 2 plataformas)
     const sx = tx - camX;
     if (sx < -60 || sx > W + 60) continue;
     const tw = torchImg.naturalWidth ? th * (torchImg.naturalWidth / torchImg.naturalHeight) : th * 0.3;
@@ -740,7 +1059,7 @@ function drawTorches() {
       ctx.globalAlpha = a;
       if (fireImg.complete && fireImg.naturalWidth) {
         ctx.save();
-        ctx.translate(sx, topY);   // pé do fogo (fixo)
+        ctx.translate(sx, topY);   // pé da barriga do fogo fixado
         ctx.rotate(tilt);
         ctx.drawImage(fireImg, -fw / 2, -fh, fw, fh);
         ctx.restore();
@@ -766,17 +1085,63 @@ function drawCampfireBase() {
   ctx.restore();
 }
 
+function buildBar(sx, topY, prog) {   // barra de progresso de obra
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(sx - 40, topY, 80, 6);
+  ctx.fillStyle = '#7ec74f';
+  ctx.fillRect(sx - 40, topY, 80 * clamp(prog, 0, 1), 6);
+}
+
+function drawPlatformBuild(s) {   // plataforma em obra (fantasma sobre a água)
+  const sx = s.x - camX;
+  if (sx < -PLAT_W || sx > W + PLAT_W) return;
+  const wl = waterLevel();
+  const topOff = PLAT_TOP_FRAC * PLAT_H;
+  const w = PLAT_W + 1;
+  const img = s.img === 'plat1' ? plat1Img : plat2Img;
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  if (img.complete && img.naturalWidth) {
+    ctx.drawImage(img, sx - w / 2, wl - PLAT_VIS - topOff, w, PLAT_H);
+  } else {
+    ctx.fillStyle = '#6a8a9a';
+    ctx.fillRect(sx - w / 2, wl - PLAT_VIS, w, PLAT_VIS);
+  }
+  ctx.restore();
+  buildBar(sx, wl - PLAT_VIS - 16, s.progress / s.t.tempo);
+}
+
+function drawTorchBuild(s) {   // tocha em obra (fantasma sobre o deck)
+  const sx = s.x - camX;
+  if (sx < -60 || sx > W + 60) return;
+  const th = 80;
+  const baseY = floorY() + 5;
+  const tw = torchImg.naturalWidth ? th * (torchImg.naturalWidth / torchImg.naturalHeight) : th * 0.3;
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  if (torchImg.complete && torchImg.naturalWidth) {
+    ctx.drawImage(torchImg, sx - tw / 2, baseY - th, tw, th);
+  } else {
+    ctx.fillStyle = '#5a4032';
+    ctx.fillRect(sx - 4, baseY - th, 8, th);
+  }
+  ctx.restore();
+  buildBar(sx, baseY - th - 12, s.progress / s.t.tempo);
+}
+
 function drawStructure(s) {
+  if (s.key === 'plataforma') { drawPlatformBuild(s); return; }
+  if (s.key === 'tocha') { drawTorchBuild(s); return; }
   const sx = s.x - camX;
   if (sx < -120 || sx > W + 120) return;
-  const y = terrainY(s.x);
+  const y = structGroundY(s);
   ctx.save();
   ctx.translate(sx, y);
   if (s.built) {
-    drawStructureShape(s.key, s.level);
+    drawScaledShape(s.key, s.level);
   } else {
     ctx.globalAlpha = 0.28;
-    drawStructureShape(s.key, s.level);
+    drawScaledShape(s.key, s.level);
     ctx.globalAlpha = 1;
 
     ctx.strokeStyle = '#7a5a33';
@@ -907,6 +1272,23 @@ function drawStructureShape(key, level) {
       ctx.moveTo(0, -116); ctx.lineTo(12, -113); ctx.lineTo(0, -110);
       ctx.closePath(); ctx.fill();
     }
+  } else if (key === 'ferreiro') {
+    const h = 74;   // base; o contexto é escalado por STRUCT_SCALE
+    const w = ferreiroImg.naturalWidth ? h * (ferreiroImg.naturalWidth / ferreiroImg.naturalHeight) : 70;
+    if (ferreiroImg.complete && ferreiroImg.naturalWidth) {
+      ctx.drawImage(ferreiroImg, -w / 2, -h, w, h);
+    } else {
+      ctx.fillStyle = '#5a5550';
+      ctx.fillRect(-w / 2, -h, w, h);
+    }
+  } else if (key === 'plataforma') {   // ícone do deck (hotbar/ghost)
+    ctx.fillStyle = '#6b4a2f';
+    ctx.fillRect(-40, -16, 80, 12);
+    ctx.fillStyle = '#8a6440';
+    for (let x = -38; x < 40; x += 12) ctx.fillRect(x, -16, 8, 12);
+    ctx.fillStyle = '#4a3320';
+    ctx.fillRect(-34, -4, 6, 16);
+    ctx.fillRect(28, -4, 6, 16);
   }
 }
 
@@ -936,8 +1318,15 @@ function drawVillager(v) {
   const ratio = aldeaoImg.naturalWidth ? aldeaoImg.naturalWidth / aldeaoImg.naturalHeight : 0.6;
   const w = h * ratio;
 
+  // posição vertical animada (transição suave deck ↔ água); recorta sob a linha d'água
+  const wl = waterLevel();
+  const baseY = (v.drawY != null) ? v.drawY : y;
+
   ctx.save();
-  ctx.translate(sx, y - hop);
+  ctx.beginPath();
+  ctx.rect(0, 0, W, wl);         // só desenha acima da água (submerge ao cair)
+  ctx.clip();
+  ctx.translate(sx, baseY - hop);
   ctx.rotate(tilt);
   ctx.scale(v.dir, 1);
   if (aldeaoImg.complete && aldeaoImg.naturalWidth) {
@@ -971,40 +1360,71 @@ function drawEnemy(e) {
     ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
+
+  // mesma animação de água do barco, sob o inimigo
+  const wimg = wakeImgs[Math.floor(animT * 8 + e.bob) % wakeImgs.length];
+  if (wimg.complete && wimg.naturalWidth) {
+    const ww = w * 1.6, wh = ww * (wimg.naturalHeight / wimg.naturalWidth);
+    ctx.save();
+    ctx.translate(sx, waterY + 2);
+    ctx.scale(dir, 1);
+    ctx.globalAlpha = 0.7;
+    ctx.drawImage(wimg, -ww / 2, -wh / 2, ww, wh);
+    ctx.restore();
+  }
 }
 
 function boatBob() {
-  return Math.sin(animT * 2) * 3 * boatIdle;
+  return Math.sin(animT * 2) * 3;   // sobe-e-desce sempre, parado ou em movimento
 }
 
 function drawBoatWake() {
   const p = state.player;
-  if (onPlatform(p.x) || Math.abs(p.vx) < 12) return;
+  if (p.mode !== 'boat' || !p.seated || wakeFade <= 0) return;
   const img = wakeImgs[Math.floor(animT * 8) % 4];
   if (!img.complete || !img.naturalWidth) return;
-  const sx = p.x - camX;
+  const sx = boat.x - camX;
   const w = 320, h = w * (img.naturalHeight / img.naturalWidth);
   ctx.save();
-  ctx.translate(sx + p.dir * 100, p.y + boatBob() + 45);
+  ctx.translate(sx + p.dir * 100, waterLevel() + boatBob() + 45);
   ctx.scale(p.dir, 1);
-  ctx.globalAlpha = 0.7;
+  ctx.globalAlpha = 0.7 * wakeFade;
   ctx.drawImage(img, -w, -h / 2, w, h);
   ctx.restore();
 }
 
 function drawBoat() {
   const p = state.player;
-  if (onPlatform(p.x)) return;
-  const sx = p.x - camX;
+  const dir = boat.dir;
+  const sx = boat.x - camX;
   const h = 60;
   const w = boatImg.naturalWidth ? h * (boatImg.naturalWidth / boatImg.naturalHeight) : h * 3;
   if (sx < -w || sx > W + w) return;
-  ctx.save();
-  ctx.translate(sx, p.y + boatBob());
-  ctx.scale(p.dir, 1);
+  const baseY = waterLevel() + boatBob();
+  const spr = boatSprite();
+  const ghost = p.boatSkin === 'ghost';
+  const ready = boatImg.complete && boatImg.naturalWidth > 0;
 
-  if (boatImg.complete && boatImg.naturalWidth > 0) {
-    ctx.drawImage(boatImg, -w / 2, -h * 0.28, w, h);
+  // reflexo do barco na água (espelhado verticalmente e desbotado)
+  if (ready) {
+    ctx.save();
+    ctx.translate(sx, baseY);
+    ctx.scale(dir, -1);
+    ctx.globalAlpha = 0.28;
+    const ripple = Math.sin(animT * 2) * 0;   // ondulação no mesmo ritmo do barco
+    ctx.transform(1, ripple, 0, 1, 0, 0);
+    // desenha espelhado para BAIXO da linha d'água
+    ctx.drawImage(spr, -w / 2, -h * 1.61, w, h);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.translate(sx, baseY);
+  ctx.scale(dir, 1);
+  if (ghost) ctx.globalAlpha = 0.7;   // fantasma
+
+  if (ready) {
+    ctx.drawImage(spr, -w / 2, -h * 0.28, w, h);
   } else {
     ctx.fillStyle = '#7a3b32';
     ctx.fillRect(-w / 2, -h * 0.28, w, h);
@@ -1015,9 +1435,10 @@ function drawBoat() {
 function drawPlayer() {
   const p = state.player;
   let sx = p.x - camX;
-  let y = p.y;
-  const noBoat = onPlatform(p.x);
-  const moving = noBoat && Math.abs(p.vx) > 12;  
+  let y = (p.drawY != null) ? p.drawY : p.y;   // posição vertical animada (cair/subir)
+  const onLand = p.mode !== 'boat';
+  const swimming = p.mode === 'boat' && !p.onBoat;   // na água sem barco
+  const moving = onLand && Math.abs(p.vx) > 12;
   const bob = moving ? Math.abs(Math.sin(animT * 10)) * 3 : 0;
   const tilt = moving ? Math.sin(animT * 10) * 0.06 : 0;
 
@@ -1025,13 +1446,17 @@ function drawPlayer() {
   const ratio = playerImg.naturalWidth ? playerImg.naturalWidth / playerImg.naturalHeight : 0.6;
   const w = h * ratio;
 
-  if (!noBoat) {              // colado no barco: mesmo balanço + descido 40%
+  if (p.mode === 'boat' && p.onBoat) {       // colado no barco
     const bw = boatImg.naturalWidth ? 60 * (boatImg.naturalWidth / boatImg.naturalHeight) : 180;
     sx -= p.dir * bw * 0.2;
-    y = p.y + boatBob() + h * 0.4;
   }
 
   ctx.save();
+  if (swimming) {              // metade do corpo submersa ao nadar
+    ctx.beginPath();
+    ctx.rect(0, 0, W, waterLevel());
+    ctx.clip();
+  }
   ctx.translate(sx, y - bob);
   ctx.rotate(tilt);
   ctx.scale(p.dir, 1);
@@ -1074,13 +1499,45 @@ function drawGlows(nf) {
   }
 }
 
+function drawPlatformGhost() {
+  const wx = mouse.x + camX;
+  const side = wx < SPAWN_X ? -1 : 1;
+  const cost = platformCost();
+  const wl = waterLevel();
+  const topOff = PLAT_TOP_FRAC * PLAT_H;
+  const w = PLAT_W + 1;
+  const ends = [
+    { s: -1, cx: planL - PLAT_W / 2, img: nextPlatImg(-1) === 'plat1' ? plat1Img : plat2Img },
+    { s: 1, cx: planR + PLAT_W / 2, img: nextPlatImg(1) === 'plat1' ? plat1Img : plat2Img },
+  ];
+  for (const e of ends) {
+    const sx = e.cx - camX;
+    const sel = e.s === side;
+    ctx.save();
+    ctx.globalAlpha = sel ? 0.6 : 0.28;
+    if (e.img.complete && e.img.naturalWidth) {
+      ctx.drawImage(e.img, sx - w / 2, wl - PLAT_VIS - topOff, w, PLAT_H);
+    }
+    ctx.restore();
+    ctx.strokeStyle = sel ? '#9fe88f' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = sel ? 3 : 1.5;
+    ctx.strokeRect(sx - w / 2, wl - PLAT_VIS, w, PLAT_VIS);
+  }
+  const tx = (side < 0 ? planL - PLAT_W / 2 : planR + PLAT_W / 2) - camX;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 14px system-ui';
+  ctx.fillStyle = state.coins >= cost ? '#9fe88f' : '#ff9a8f';
+  ctx.fillText(`Plataforma ${side < 0 ? '◀ esquerda' : 'direita ▶'} — ${cost} moedas`, tx, wl - PLAT_VIS - 16);
+}
+
 function drawGhost() {
   const key = ORDER[state.build.sel];
+  if (TYPES[key].special === 'platform') { drawPlatformGhost(); return; }
   const t = TYPES[key];
   const wx = mouse.x + camX;
   const v = validatePlacement(wx, key);
   const sx = wx - camX;
-  const y = terrainY(wx);
+  const y = onPlatform(wx) ? floorY() : terrainY(wx);
 
   ctx.strokeStyle = 'rgba(255,255,255,0.15)';
   ctx.lineWidth = 1;
@@ -1089,7 +1546,7 @@ function drawGhost() {
   ctx.save();
   ctx.translate(sx, y);
   ctx.globalAlpha = 0.55;
-  drawStructureShape(key, 1);
+  drawScaledShape(key, 1);
   ctx.globalAlpha = 1;
   ctx.fillStyle = v.ok ? 'rgba(110,230,110,0.22)' : 'rgba(235,80,70,0.30)';
   ctx.fillRect(-t.w / 2 - 4, -t.h - 4, t.w + 8, t.h + 8);
@@ -1098,7 +1555,7 @@ function drawGhost() {
   ctx.textAlign = 'center';
   ctx.font = 'bold 14px system-ui';
   ctx.fillStyle = v.ok ? '#9fe88f' : '#ff9a8f';
-  ctx.fillText(v.ok ? `${t.nome} — ${t.custo} moedas (clique)` : v.reason, sx, y - t.h - 22);
+  ctx.fillText(v.ok ? `${t.nome} — ${t.custo} moedas` : v.reason, sx, y - t.h - 22);
 }
 
 function structUnderMouse() {
@@ -1106,8 +1563,9 @@ function structUnderMouse() {
   const wx = mouse.x + camX;
   for (const s of state.structures) {
     if (s.dead) continue;
+    if (s.key === 'plataforma' || s.key === 'tocha') continue;   // obras automáticas, sem gerência
     if (Math.abs(s.x - wx) > s.t.w / 2 + 12) continue;
-    const gy = terrainY(s.x);
+    const gy = structGroundY(s);
     if (mouse.y >= gy - structH(s) - 18 && mouse.y <= gy + 16) return s;
   }
   return null;
@@ -1119,7 +1577,7 @@ function drawManage() {
   const s = hoveredStruct;
   if (!s) return;
   const sx = s.x - camX;
-  const top = terrainY(s.x) - structH(s);
+  const top = structGroundY(s) - structH(s);
 
   ctx.strokeStyle = 'rgba(255,233,168,0.9)';
   ctx.lineWidth = 2;
@@ -1232,9 +1690,10 @@ function drawHUD(nf) {
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 13px system-ui';
       ctx.fillText(`${i + 1}. ${t.nome}`, x + 56, y0 + 24);
-      ctx.fillStyle = state.coins >= t.custo ? '#ffd23e' : '#ff8a7f';
+      const custo = t.special === 'platform' ? platformCost() : t.custo;
+      ctx.fillStyle = state.coins >= custo ? '#ffd23e' : '#ff8a7f';
       ctx.font = '13px system-ui';
-      ctx.fillText(`${t.custo} moedas`, x + 56, y0 + 44);
+      ctx.fillText(`${custo} moedas`, x + 56, y0 + 44);
     }
   }
 
@@ -1252,20 +1711,14 @@ function drawHUD(nf) {
 
 function drawHelp() {
   const lines = [
-    'poggerscity — jogo estilo kingdom  ',
+    'poggerscity',
     '',
-    'A/D ou ←/→ — cavalgar      Shift — galopar',
-    'B — modo construção      1-4 ou roda do mouse — escolher',
-    '      Esc — cancelar',
-    '',
-    'Fazendas geram moedas de dia · Tendas atraem aldeões',
-    'Aldeões constroem as obras · Torres atiram nos monstros',
-    'Muralhas bloqueiam o caminho · À noite ELES molestam...',
-    '',
-    'Mouse numa estrutura → Melhorar (U) ou Demolir (X, +70%)',
+    'A/D ou ←/→ — Andar      Shift — Correr',
+    'B — modo construção',
+    'Melhorar (U) ou Demolir (X, +70%)',
     'Muralha e Torre têm nível 2 (mais HP / alcance)',
     '',
-    'H — fechar esta janela',
+    'H — fechar janela',
   ];
   const bw = 560, bh = lines.length * 24 + 30;
   const bx = (W - bw) / 2, by = (H - bh) / 2 - 30;
